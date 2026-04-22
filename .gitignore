@@ -1,8 +1,6 @@
 .venv/ 
 __pycache__/ 
 *.pyc 
-outputs/*.npy 
-outputs/*.pkl 
 data/processed/ 
 .vscode/ 
 *.log 
