@@ -47,7 +47,9 @@ def compute_energy(close, atr, period=14, smooth=3):
     var = (cumsum2[period:] - cumsum2[:-period]) / period - mean**2
 
     std = np.sqrt(np.maximum(var, 0))
-    std = np.pad(std, (period, 0), mode='edge')
+    # std has length n - period + 1. We need length n.
+    # pad at the beginning
+    std = np.pad(std, (n - len(std), 0), mode='edge')
 
     # -------------------------
     # 3. ENERGY BASE

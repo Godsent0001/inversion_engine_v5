@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 
 from indicators.dmao import compute_dmao
 from indicators.dllco import compute_dllco
@@ -34,15 +35,8 @@ def clean_data(high, low, close):
 # EMA (shared)
 # =========================================================
 def ema(arr, period):
-    alpha = 2 / (period + 1)
-
-    out = np.zeros_like(arr, dtype=np.float32)
-    out[0] = arr[0]
-
-    for i in range(1, len(arr)):
-        out[i] = alpha * arr[i] + (1 - alpha) * out[i - 1]
-
-    return out
+    # Using pandas for fast vectorized EMA
+    return pd.Series(arr).ewm(span=period, adjust=False).mean().values.astype(np.float32)
 
 
 # =========================================================
@@ -50,17 +44,14 @@ def ema(arr, period):
 # =========================================================
 def compute_atr(high, low, close, period=14):
 
-    tr = np.maximum(high[1:], close[:-1]) - np.minimum(low[1:], close[:-1])
+    tr1 = high[1:] - low[1:]
+    tr2 = np.abs(high[1:] - close[:-1])
+    tr3 = np.abs(low[1:] - close[:-1])
 
-    atr = np.zeros_like(close, dtype=np.float32)
-    alpha = 2 / (period + 1)
+    tr = np.maximum(tr1, np.maximum(tr2, tr3))
+    tr = np.concatenate(([tr[0]], tr))
 
-    atr[0] = tr[0]
-
-    for i in range(1, len(tr)):
-        atr[i] = alpha * tr[i] + (1 - alpha) * atr[i - 1]
-
-    atr = np.concatenate(([atr[0]], atr))
+    atr = ema(tr, period)
 
     return atr.astype(np.float32)
 

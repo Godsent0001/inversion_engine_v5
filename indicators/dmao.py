@@ -1,15 +1,10 @@
 import numpy as np
 
 
+import pandas as pd
+
 def ema(arr, period):
-    alpha = 2 / (period + 1)
-    out = np.zeros_like(arr, dtype=np.float32)
-    out[0] = arr[0]
-
-    for i in range(1, len(arr)):
-        out[i] = alpha * arr[i] + (1 - alpha) * out[i - 1]
-
-    return out
+    return pd.Series(arr).ewm(span=period, adjust=False).mean().values.astype(np.float32)
 
 
 def compute_dmao(close, atr,
@@ -56,6 +51,7 @@ def compute_dmao(close, atr,
     sign_raw = np.sign(raw_cil)
 
     counter = np.where(sign_raw != sign_cil, abs_raw, 0)
+    # Using np.convolve with 'valid' or 'same' is fine, but for consistency with rolling windows:
     counter_sum = np.convolve(counter, np.ones(cons_window), mode="same")
 
     consistency = np.where(

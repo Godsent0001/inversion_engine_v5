@@ -1,15 +1,10 @@
 import numpy as np
 
 
+import pandas as pd
+
 def ema(arr, period):
-    alpha = 2 / (period + 1)
-    out = np.zeros_like(arr, dtype=np.float32)
-    out[0] = arr[0]
-
-    for i in range(1, len(arr)):
-        out[i] = alpha * arr[i] + (1 - alpha) * out[i - 1]
-
-    return out
+    return pd.Series(arr).ewm(span=period, adjust=False).mean().values.astype(np.float32)
 
 
 def compute_dllco(high, low, close, atr,

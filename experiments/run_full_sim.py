@@ -16,17 +16,18 @@ def load_data(path="data/raw/xauusd_30m.csv"):
 
     df = pd.read_csv(path)
 
+    open_ = df["open"].values.astype(np.float32)
     high = df["high"].values.astype(np.float32)
     low = df["low"].values.astype(np.float32)
     close = df["close"].values.astype(np.float32)
 
-    return high, low, close
+    return open_, high, low, close
 
 
 # -------------------------
 # SPLIT INTO 4 STAGES
 # -------------------------
-def split_stages(features, high, low, close, atr):
+def split_stages(features, open_, high, low, close, atr):
 
     n = len(close)
     step = n // 4
@@ -39,6 +40,7 @@ def split_stages(features, high, low, close, atr):
 
         stages.append((
             features[start:end],
+            open_[start:end],
             high[start:end],
             low[start:end],
             close[start:end],
@@ -59,14 +61,13 @@ def stage_filter(stats):
     equity = stats["equity"]
     trades = stats["trades"]
     winrate = stats.get("winrate", np.zeros_like(equity))
-    max_dd = stats.get("max_drawdown", np.ones_like(equity))
+    # max_dd = stats.get("max_drawdown", np.ones_like(equity))
 
-    cond1 = equity > 1.05         # profitable
-    cond2 = trades > 20           # enough trades
-    cond3 = winrate > 0.3         # not random
-    cond4 = max_dd <= 0.20        # <= 20% drawdown
+    cond1 = equity > 1.02         # profitable (lowered for stages)
+    cond2 = trades > 5            # enough trades
+    cond3 = winrate > 0.25        # not random
 
-    return cond1 & cond2 & cond3 & cond4
+    return cond1 & cond2 & cond3
 
 
 # -------------------------
@@ -100,7 +101,7 @@ def subset_population(pop, indices):
 def main():
 
     print("Loading data...")
-    high, low, close = load_data()
+    open_, high, low, close = load_data()
 
     # -------------------------
     # FEATURES
@@ -115,6 +116,7 @@ def main():
 
     features = features[warmup:]
     atr = atr[warmup:]
+    open_ = open_[warmup:]
     high = high[warmup:]
     low = low[warmup:]
     close = close[warmup:]
@@ -134,7 +136,7 @@ def main():
     # STAGES
     # -------------------------
     print("Splitting into 4 stages...")
-    stages = split_stages(features, high, low, close, atr)
+    stages = split_stages(features, open_, high, low, close, atr)
 
     survivors = np.arange(len(pop["rrr"]))
 
@@ -143,23 +145,23 @@ def main():
     # -------------------------
     for i, stage in enumerate(stages):
 
-        print(f"\n=== STAGE {i+1} ===")
+        print(f"\n=== STAGE {i+1} ===", flush=True)
 
-        f, h, l, c, a = stage
+        f, o, h, l, c, a = stage
 
         pop_stage = subset_population(pop, survivors)
 
-        stats = run_simulation(pop_stage, f, h, l, c, a)
+        stats = run_simulation(pop_stage, f, o, h, l, c, a)
 
         mask = stage_filter(stats)
         survivors = survivors[mask]
 
-        print(f"Survivors: {len(survivors)}")
+        print(f"Survivors: {len(survivors)}", flush=True)
 
         # Diagnostics
         if len(survivors) > 0:
-            print(f"Avg equity: {stats['equity'][mask].mean():.3f}")
-            print(f"Avg trades: {stats['trades'][mask].mean():.1f}")
+            print(f"Avg equity: {stats['equity'][mask].mean():.3f}", flush=True)
+            print(f"Avg trades: {stats['trades'][mask].mean():.1f}", flush=True)
 
         # Safety stop
         if len(survivors) < 20:
@@ -173,17 +175,20 @@ def main():
 
     final_pop = subset_population(pop, survivors)
 
-    final_stats = run_simulation(final_pop, features, high, low, close, atr)
+    final_stats = run_simulation(final_pop, features, open_, high, low, close, atr)
 
     # -------------------------
     # METRICS
     # -------------------------
     print("Computing metrics...")
 
-    equity_curve = np.tile(final_stats["equity"][:, None], (1, 50))
-    trade_pnl = np.zeros((len(survivors), 50))
-
-    metrics = compute_metrics(equity_curve, trade_pnl)
+    # We use a simplified metrics computation for now as the JIT returns final stats
+    metrics = {
+        "final_equity": final_stats["equity"],
+        "winrate": final_stats["winrate"],
+        "trades": final_stats["trades"],
+        "max_drawdown": final_stats["max_drawdown"]
+    }
 
     # -------------------------
     # SAVE
