@@ -195,11 +195,36 @@ def main():
     # -------------------------
     print("Saving results...")
 
+    # 1. Full binary data
     np.save("outputs/survivors.npy", {
         "metrics": metrics,
         "population": final_pop,
         "stats": final_stats
     })
+
+    # 2. Human-readable metrics (JSON)
+    import json
+    def convert_to_list(obj):
+        if isinstance(obj, np.ndarray): return obj.tolist()
+        if isinstance(obj, (np.float32, np.float64)): return float(obj)
+        return obj
+
+    readable_metrics = {k: convert_to_list(v) for k, v in metrics.items()}
+    with open("outputs/survivors_metrics.json", "w") as f:
+        json.dump(readable_metrics, f, indent=2)
+
+    # 3. Top agents ranking (CSV)
+    df_metrics = pd.DataFrame({
+        "agent_idx": np.arange(len(metrics["final_equity"])),
+        "final_equity": metrics["final_equity"],
+        "winrate": metrics["winrate"],
+        "trades": metrics["trades"],
+        "max_drawdown": metrics["max_drawdown"]
+    })
+    df_metrics = df_metrics.sort_values("final_equity", ascending=False)
+    df_metrics.to_csv("outputs/top_agents.csv", index=False)
+
+    print("Saved: outputs/survivors.npy, outputs/survivors_metrics.json, outputs/top_agents.csv")
 
     # -------------------------
     # EXPORT
