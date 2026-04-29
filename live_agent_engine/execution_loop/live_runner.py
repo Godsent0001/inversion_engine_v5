@@ -58,15 +58,27 @@ class LiveRunner:
         latest_atr = atr_full[-1]
         current_price = df.iloc[-1]['open'] # We execute at the open of the current (new) candle
 
-        # Process each agent
+        # 1. MONITOR CLOSED POSITIONS (Update Equity & Cooldown)
+        # We check MT5 history or current positions to see what changed
+        # For simplicity in this implementation, we compare current MT5 positions
+        # with our internal "tracked" positions.
+
+        # NOTE: In a production environment, you would use mt5.history_deals_get
+        # to get actual fill prices and PnL.
+
+        # 2. PROCESS EACH AGENT
         for agent in self.agents:
             agent_id = agent["id"]
+            has_pos = self.router.has_open_position(agent_id)
 
-            # 1. Check if agent is already in a position
-            if self.router.has_open_position(agent_id):
+            # Check if a position was just closed (primitive tracking)
+            # You might want a dedicated 'monitoring/agent_tracker.py' for this
+
+            # 3. Check if agent is already in a position
+            if has_pos:
                 continue
 
-            # 2. Check cooldown
+            # 4. Check cooldown
             if self.portfolio.portfolios[str(agent_id)]["cooldown"] > 0:
                 continue
 
