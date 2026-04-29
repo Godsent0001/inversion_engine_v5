@@ -1,0 +1,9 @@
+{
+  "agents": [
+    {"id": 36, "model": "agent_36.pkl"},
+    {"id": 57, "model": "agent_57.pkl"},
+    {"id": 58, "model": "agent_58.pkl"},
+    {"id": 4408, "model": "agent_4408.pkl"},
+    {"id": 2669, "model": "agent_2669.pkl"}
+  ]
+}
