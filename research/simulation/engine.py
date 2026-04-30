@@ -162,16 +162,144 @@ def run_simulation_jit(
 
     return equity, trades_count, wins_count, max_drawdown
 
+@njit
+def run_simulation_with_sharpe_jit(
+    features, open_, high, low, close, atr,
+    w1, b1, w2, b2,
+    rrr, atr_mult, threshold, cooldown, aggression
+):
+    n_agents = w1.shape[0]
+    n_steps = len(close)
+    n_features = features.shape[1]
+    hidden_size = w1.shape[2]
+
+    # State arrays
+    equity = np.ones(n_agents, dtype=np.float32)
+    positions = np.zeros(n_agents, dtype=np.int8)
+    entry_price = np.zeros(n_agents, dtype=np.float32)
+    sl = np.zeros(n_agents, dtype=np.float32)
+    tp = np.zeros(n_agents, dtype=np.float32)
+    cooldown_counter = np.zeros(n_agents, dtype=np.int32)
+
+    # Tracking
+    trades_count = np.zeros(n_agents, dtype=np.int32)
+    wins_count = np.zeros(n_agents, dtype=np.int32)
+    peak_equity = np.ones(n_agents, dtype=np.float32)
+    max_drawdown = np.zeros(n_agents, dtype=np.float32)
+
+    # For Sharpe (mean and std of daily/bar returns)
+    # We'll track the sum of returns and sum of squared returns
+    sum_ret = np.zeros(n_agents, dtype=np.float32)
+    sum_sq_ret = np.zeros(n_agents, dtype=np.float32)
+
+    pending_decisions = np.zeros(n_agents, dtype=np.int8)
+
+    for t in range(n_steps):
+        prev_equity = equity.copy()
+
+        # 1. EXECUTE PENDING
+        o_t = open_[t]
+        atr_t = atr[t]
+        for i in range(n_agents):
+            if pending_decisions[i] != 0:
+                if positions[i] == 0 and cooldown_counter[i] == 0:
+                    direction = pending_decisions[i]
+                    positions[i] = direction
+                    entry_price[i] = o_t
+                    dist = atr_t * atr_mult[i]
+                    if direction == 1:
+                        sl[i] = o_t - dist
+                        tp[i] = o_t + dist * rrr[i]
+                    else:
+                        sl[i] = o_t + dist
+                        tp[i] = o_t - dist * rrr[i]
+                pending_decisions[i] = 0
+
+        # 2. UPDATE TRADES
+        h_t = high[t]
+        l_t = low[t]
+        for i in range(n_agents):
+            if positions[i] == 0: continue
+            exit_price = 0.0
+            hit = 0
+            if positions[i] == 1:
+                if l_t <= sl[i]: hit = -1; exit_price = sl[i]
+                elif h_t >= tp[i]: hit = 1; exit_price = tp[i]
+            else:
+                if h_t >= sl[i]: hit = -1; exit_price = sl[i]
+                elif l_t <= tp[i]: hit = 1; exit_price = tp[i]
+            if hit != 0:
+                pnl = ((exit_price - entry_price[i]) / entry_price[i]) * positions[i]
+                pnl -= 0.0002
+                equity[i] *= (1.0 + pnl)
+                trades_count[i] += 1
+                if pnl > 0: wins_count[i] += 1
+                positions[i] = 0
+                cooldown_counter[i] = cooldown[i]
+
+        # 3. DECISION
+        feat_t = features[t]
+        for i in range(n_agents):
+            h = np.zeros(hidden_size, dtype=np.float32)
+            for j in range(hidden_size):
+                sum_w = 0.0
+                for k in range(n_features):
+                    sum_w += feat_t[k] * w1[i, k, j]
+                h[j] = np.tanh(sum_w + b1[i, j])
+            out = np.zeros(3, dtype=np.float32)
+            for j in range(3):
+                sum_o = 0.0
+                for k in range(hidden_size):
+                    sum_o += h[k] * w2[i, k, j]
+                out[j] = sum_o + b2[i, j]
+            out *= aggression[i]
+            probs = fast_softmax_row(out)
+            best_idx = 0; max_p = probs[0]
+            if probs[1] > max_p: max_p = probs[1]; best_idx = 1
+            if probs[2] > max_p: max_p = probs[2]; best_idx = 2
+            if max_p >= threshold[i]:
+                if best_idx == 1: pending_decisions[i] = 1
+                elif best_idx == 2: pending_decisions[i] = -1
+
+            # 4. STATS
+            if cooldown_counter[i] > 0: cooldown_counter[i] -= 1
+            if equity[i] > peak_equity[i]: peak_equity[i] = equity[i]
+            dd = (peak_equity[i] - equity[i]) / peak_equity[i]
+            if dd > max_drawdown[i]: max_drawdown[i] = dd
+
+            # Sharpe components
+            bar_return = (equity[i] - prev_equity[i]) / prev_equity[i]
+            sum_ret[i] += bar_return
+            sum_sq_ret[i] += bar_return ** 2
+
+    # Final Sharpe
+    mean_ret = sum_ret / n_steps
+    var_ret = (sum_sq_ret / n_steps) - (mean_ret ** 2)
+    std_ret = np.sqrt(np.maximum(var_ret, 1e-12))
+    sharpe = (mean_ret / std_ret) * np.sqrt(252 * 48) # Annualized for 30m candles (48 per day)
+
+    return equity, trades_count, wins_count, max_drawdown, sharpe
+
 def run_simulation(pop, features, open_, high, low, close, atr):
-    equity, trades, wins, max_dd = run_simulation_jit(
-        features, open_, high, low, close, atr,
-        pop["w1"], pop["b1"], pop["w2"], pop["b2"],
-        pop["rrr"], pop["atr"], pop["threshold"], pop["cooldown"], pop["aggression"]
-    )
+    # For large runs, use the faster version, for final/smaller runs, use Sharpe version
+    if len(pop["rrr"]) > 20000:
+        equity, trades, wins, max_dd = run_simulation_jit(
+            features, open_, high, low, close, atr,
+            pop["w1"], pop["b1"], pop["w2"], pop["b2"],
+            pop["rrr"], pop["atr"], pop["threshold"], pop["cooldown"], pop["aggression"]
+        )
+        sharpe = np.zeros_like(equity)
+    else:
+        equity, trades, wins, max_dd, sharpe = run_simulation_with_sharpe_jit(
+            features, open_, high, low, close, atr,
+            pop["w1"], pop["b1"], pop["w2"], pop["b2"],
+            pop["rrr"], pop["atr"], pop["threshold"], pop["cooldown"], pop["aggression"]
+        )
 
     return {
         "equity": equity,
         "trades": trades,
         "winrate": np.where(trades > 0, wins / trades, 0.0).astype(np.float32),
-        "max_drawdown": max_dd
+        "max_drawdown": max_dd,
+        "sharpe": sharpe
     }

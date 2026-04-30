@@ -1,6 +1,6 @@
 import numpy as np
 
-from utils.vector_ops import forward_nn, softmax
+from shared.utils.vector_ops import forward_nn, softmax
 
 
 # -------------------------

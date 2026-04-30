@@ -1,8 +1,8 @@
 import time
 import numpy as np
 
-from core.population import create_population
-from simulation.engine import run_simulation
+from research.core.population import create_population
+from research.simulation.engine import run_simulation
 
 
 def benchmark(features, high, low, close, atr, n_agents=100_000):

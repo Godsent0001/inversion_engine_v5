@@ -1,12 +1,12 @@
 import numpy as np
 import pandas as pd
 
-from core.population import create_population
-from simulation.engine import run_simulation
-from portfolio.exporter import export_agents
-from core.metrics import compute_metrics
+from research.core.population import create_population
+from research.simulation.engine import run_simulation
+from research.portfolio.exporter import export_agents
+from research.core.metrics import compute_metrics
 
-from indicators.pipeline import build_features
+from shared.indicators.pipeline import build_features
 
 
 # -------------------------

@@ -1,21 +1,25 @@
 import numpy as np
-import pickle
 
 
 # -------------------------
-# LOAD RESULTS
+# LOAD RESULTS (ROBUST)
 # -------------------------
 def load_results():
     data = np.load("outputs/survivors.npy", allow_pickle=True).item()
     metrics = data["metrics"]
 
-    # Add calculated metrics if missing
+    # Ensure required metrics exist
     if "returns" not in metrics:
         metrics["returns"] = metrics["final_equity"] - 1.0
+
     if "sharpe" not in metrics:
-        metrics["sharpe"] = np.zeros_like(metrics["final_equity"])
-    if "win_rate" not in metrics and "winrate" in metrics:
-        metrics["win_rate"] = metrics["winrate"]
+        metrics["sharpe"] = np.zeros_like(metrics["returns"])
+
+    if "win_rate" not in metrics:
+        if "winrate" in metrics:
+            metrics["win_rate"] = metrics["winrate"]
+        else:
+            metrics["win_rate"] = np.zeros_like(metrics["returns"])
 
     return metrics, data["population"], data.get("stats", None)
 
@@ -26,7 +30,6 @@ def load_results():
 def summary(metrics):
     returns = metrics["returns"]
     dd = metrics["max_drawdown"]
-    sharpe = metrics["sharpe"]
 
     print("\n=== SUMMARY ===")
     print(f"Agents: {len(returns)}")
@@ -51,14 +54,14 @@ def distribution(metrics):
 
 
 # -------------------------
-# RISK-ADJUSTED SCORING
+# RISK-ADJUSTED SCORING (IMPROVED)
 # -------------------------
 def compute_score(metrics):
     returns = metrics["returns"]
     dd = metrics["max_drawdown"]
-    # score = (returns * 0.6) - (dd * 0.8)
-    # Simple score for now
-    score = returns / (dd + 0.1)
+
+    # Better universal scoring (works for all strategy types)
+    score = returns / (dd + 0.05)
 
     return score
 
@@ -71,7 +74,7 @@ def top_agents(metrics, pop, top_n=10):
     score = compute_score(metrics)
     idx = np.argsort(score)[-top_n:][::-1]
 
-    print("\n=== TOP AGENTS (EQUITY/DD RATIO) ===")
+    print("\n=== TOP AGENTS (RETURN / DD) ===")
 
     for i in idx:
         fam = pop.get("family", ["N/A"] * len(score))[i]
@@ -81,6 +84,7 @@ def top_agents(metrics, pop, top_n=10):
             f"Family: {fam} | "
             f"Return: {metrics['returns'][i]:.3f} | "
             f"DD: {metrics['max_drawdown'][i]:.3f} | "
+            f"WinRate: {metrics['win_rate'][i]:.3f} | "
             f"Trades: {metrics['trades'][i]}"
         )
 
@@ -116,6 +120,66 @@ def family_analysis(metrics, pop):
 
 
 # -------------------------
+# PARAMETER ANALYSIS
+# -------------------------
+def parameter_analysis(metrics, pop):
+
+    print("\n=== PARAMETER INSIGHT ===")
+
+    returns = metrics["returns"]
+
+    # RRR
+    print("\n-- RRR --")
+    for r in sorted(np.unique(pop["rrr"])):
+        mask = pop["rrr"] == r
+        if np.sum(mask) > 0:
+            print(f"RRR {r}: Avg Return = {returns[mask].mean():.3f}")
+
+    # ATR MULTIPLIER
+    print("\n-- ATR MULTIPLIER --")
+    for a in sorted(np.unique(pop["atr"])):
+        mask = pop["atr"] == a
+        if np.sum(mask) > 0:
+            print(f"ATR {a}: Avg Return = {returns[mask].mean():.3f}")
+
+    # THRESHOLD
+    print("\n-- THRESHOLD BUCKETS --")
+    bins = [0.3, 0.5, 0.7, 0.9]
+
+    for i in range(len(bins) - 1):
+        mask = (pop["threshold"] >= bins[i]) & (pop["threshold"] < bins[i+1])
+
+        if np.sum(mask) > 0:
+            print(
+                f"{bins[i]:.1f}-{bins[i+1]:.1f}: "
+                f"Avg Return = {returns[mask].mean():.3f}"
+            )
+
+
+# -------------------------
+# PORTFOLIO HINT (VERY IMPORTANT)
+# -------------------------
+def portfolio_hint(metrics, pop):
+
+    print("\n=== PORTFOLIO HINT ===")
+
+    score = compute_score(metrics)
+    top_mask = score > np.percentile(score, 90)
+
+    families = pop.get("family", None)
+
+    if families is None:
+        print("No family info available.")
+        return
+
+    unique = np.unique(families)
+
+    for f in unique:
+        mask = (families == f) & top_mask
+        print(f"{f}: {np.sum(mask)} agents in top 10%")
+
+
+# -------------------------
 # MAIN PIPELINE
 # -------------------------
 def run_analysis(metrics, pop):
@@ -123,7 +187,9 @@ def run_analysis(metrics, pop):
     summary(metrics)
     distribution(metrics)
     family_analysis(metrics, pop)
+    parameter_analysis(metrics, pop)
     top_agents(metrics, pop, top_n=10)
+    portfolio_hint(metrics, pop)
 
 
 # -------------------------
@@ -141,3 +207,4 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         print("Error loading data:", e)
+        print("Make sure simulation has been run first.")

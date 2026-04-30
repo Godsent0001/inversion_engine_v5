@@ -1,12 +1,12 @@
 import numpy as np
 import pandas as pd
 
-from indicators.dmao import compute_dmao
-from indicators.dllco import compute_dllco
-from indicators.mrpo import compute_mrpo
-from indicators.energy import compute_energy
+from shared.indicators.dmao import compute_dmao
+from shared.indicators.dllco import compute_dllco
+from shared.indicators.mrpo import compute_mrpo
+from shared.indicators.energy import compute_energy
 
-from utils.normalization import normalize_features
+from shared.utils.normalization import normalize_features
 
 
 # =========================================================

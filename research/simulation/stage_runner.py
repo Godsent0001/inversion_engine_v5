@@ -1,6 +1,6 @@
 import numpy as np
 
-from simulation.engine import run_simulation
+from research.simulation.engine import run_simulation
 
 
 # -------------------------
