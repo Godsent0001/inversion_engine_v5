@@ -41,16 +41,20 @@ def batch_dot(x, w):
 # -------------------------
 def forward_nn(x, w1, b1, w2, b2):
     """
-    x: (features,)
-    w1: (N, F, H)
-    w2: (N, H, 3)
+    Handles both batch (N, F) and single agent (F,) cases.
+    x: (F,) or (N, F)
+    w1: (F, H) or (N, F, H)
+    w2: (H, 3) or (N, H, 3)
     """
 
-    # Hidden
-    h = np.tanh(np.einsum("f,nfh->nh", x, w1) + b1)
-
-    # Output
-    out = np.einsum("nh,nhk->nk", h, w2) + b2
+    if w1.ndim == 3:
+        # Batch mode
+        h = np.tanh(np.einsum("f,nfh->nh", x, w1) + b1)
+        out = np.einsum("nh,nhk->nk", h, w2) + b2
+    else:
+        # Single agent mode
+        h = np.tanh(np.dot(x, w1) + b1)
+        out = np.dot(h, w2) + b2
 
     return out
 
@@ -60,13 +64,16 @@ def forward_nn(x, w1, b1, w2, b2):
 # -------------------------
 def softmax(x):
     """
-    x: (N, K)
+    Handles both (N, K) and (K,) cases.
     """
-
-    x_shift = x - np.max(x, axis=1, keepdims=True)
-    exp = np.exp(x_shift)
-
-    return exp / np.sum(exp, axis=1, keepdims=True)
+    if x.ndim == 2:
+        x_shift = x - np.max(x, axis=1, keepdims=True)
+        exp = np.exp(x_shift)
+        return exp / np.sum(exp, axis=1, keepdims=True)
+    else:
+        x_shift = x - np.max(x)
+        exp = np.exp(x_shift)
+        return exp / np.sum(exp)
 
 
 # -------------------------

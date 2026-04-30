@@ -4,7 +4,7 @@ import numpy as np
 from datetime import datetime
 
 from config import settings
-from research.data.feed import MT5DataFeed
+# from research.data.feed import MT5DataFeed
 from shared.indicators.pipeline import build_features
 from agents.agent_loader import AgentLoader
 from agents.decision_engine import DecisionEngine

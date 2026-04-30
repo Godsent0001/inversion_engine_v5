@@ -1,3 +1,5 @@
-numpy 
-pandas 
-tqdm 
+numpy
+pandas
+tqdm
+numba
+MetaTrader5; platform_system == "Windows"
