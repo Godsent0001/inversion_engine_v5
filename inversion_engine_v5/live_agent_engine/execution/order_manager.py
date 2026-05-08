@@ -23,11 +23,20 @@ class OrderManager:
         tp,
         comment=""
     ):
-
-        order_type = mt5.ORDER_TYPE_BUY if action == 1 else mt5.ORDER_TYPE_SELL
+        """
+        Builds a request for a PENDING STOP order.
+        action=1 -> BUY_STOP
+        action=-1 -> SELL_STOP
+        """
+        if action == 1:
+            order_type = mt5.ORDER_TYPE_BUY_STOP
+        elif action == -1:
+            order_type = mt5.ORDER_TYPE_SELL_STOP
+        else:
+            raise ValueError(f"Invalid action for stop order: {action}")
 
         request = {
-            "action": mt5.TRADE_ACTION_DEAL,
+            "action": mt5.TRADE_ACTION_PENDING,
             "symbol": symbol,
             "volume": float(volume),
             "type": order_type,
@@ -38,9 +47,19 @@ class OrderManager:
             "magic": int(agent_id),
             "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": mt5.ORDER_FILLING_RETURN,
         }
 
+        return request
+
+    def build_cancel_request(self, ticket):
+        """
+        Builds a request to cancel a pending order.
+        """
+        request = {
+            "action": mt5.TRADE_ACTION_REMOVE,
+            "order": int(ticket),
+        }
         return request
 
     # =========================

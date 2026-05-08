@@ -82,6 +82,24 @@ class PositionRouter:
         return len(positions)
 
     # =========================
+    # GET PENDING ORDERS (NEW)
+    # =========================
+    def get_agent_pending_orders(self, agent_id, symbol="XAUUSD"):
+        try:
+            orders = mt5.orders_get()
+            if orders is None:
+                return []
+
+            filtered = [
+                o for o in orders
+                if o.magic == int(agent_id) and o.symbol == symbol
+            ]
+            return filtered
+        except Exception as e:
+            error_logger.error(f"Error fetching pending orders for agent {agent_id}: {e}")
+            return []
+
+    # =========================
     # GET POSITION DETAILS
     # =========================
     def get_position_details(self, agent_id, symbol="XAUUSD"):

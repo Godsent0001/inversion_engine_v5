@@ -31,8 +31,12 @@ class PortfolioManager:
             if str(aid) not in data:
                 data[str(aid)] = {
                     "equity": float(self.starting_balance),
-                    "cooldown": int(0)
+                    "cooldown": int(0),
+                    "pending_ticket": None
                 }
+            else:
+                if "pending_ticket" not in data[str(aid)]:
+                    data[str(aid)]["pending_ticket"] = None
 
         self._save(data)
         return data
@@ -77,6 +81,19 @@ class PortfolioManager:
                 self.portfolios[aid]["cooldown"] = int(cooldown) - 1
 
         self._save()
+
+    # -------------------------
+    # PENDING TICKET MGMT
+    # -------------------------
+    def set_pending_ticket(self, agent_id, ticket):
+        aid = str(agent_id)
+        if aid in self.portfolios:
+            self.portfolios[aid]["pending_ticket"] = ticket
+            self._save()
+
+    def get_pending_ticket(self, agent_id):
+        aid = str(agent_id)
+        return self.portfolios.get(aid, {}).get("pending_ticket")
 
     # -------------------------
     # GET EQUITY

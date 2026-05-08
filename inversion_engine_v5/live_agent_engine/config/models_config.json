@@ -1,9 +1,24 @@
 {
   "agents": [
-    {"id": 36, "model": "agent_36.pkl"},
-    {"id": 57, "model": "agent_57.pkl"},
-    {"id": 58, "model": "agent_58.pkl"},
-    {"id": 4408, "model": "agent_4408.pkl"},
-    {"id": 2669, "model": "agent_2669.pkl"}
+    {
+      "id": 2865,
+      "model": "agent_2865.pkl"
+    },
+    {
+      "id": 3709,
+      "model": "agent_3709.pkl"
+    },
+    {
+      "id": 3229,
+      "model": "agent_3229.pkl"
+    },
+    {
+      "id": 546,
+      "model": "agent_546.pkl"
+    },
+    {
+      "id": 404,
+      "model": "agent_404.pkl"
+    }
   ]
 }
