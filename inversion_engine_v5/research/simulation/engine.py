@@ -203,10 +203,14 @@ def run_simulation(pop, features, open_, high, low, close, atr, dayofweek, hour)
         pop["rrr"], pop["atr"], pop["threshold"], pop["aggression"]
     )
 
+    winrate = np.zeros_like(equity)
+    mask = trades > 0
+    winrate[mask] = wins[mask] / trades[mask]
+
     return {
         "equity": equity,
         "trades": trades,
-        "winrate": np.where(trades > 0, wins / trades, 0.0).astype(np.float32),
+        "winrate": winrate.astype(np.float32),
         "max_drawdown": max_dd,
         "sharpe": sharpe,
         "max_losing_streak": max_losing_streak
