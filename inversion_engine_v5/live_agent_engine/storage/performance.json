@@ -18,5 +18,30 @@
   "2669": {
     "equity": 10000.0,
     "cooldown": 0
+  },
+  "2865": {
+    "equity": 10000.0,
+    "cooldown": 0,
+    "pending_ticket": null
+  },
+  "3709": {
+    "equity": 10000.0,
+    "cooldown": 0,
+    "pending_ticket": null
+  },
+  "3229": {
+    "equity": 10000.0,
+    "cooldown": 0,
+    "pending_ticket": null
+  },
+  "546": {
+    "equity": 10000.0,
+    "cooldown": 0,
+    "pending_ticket": null
+  },
+  "404": {
+    "equity": 10000.0,
+    "cooldown": 0,
+    "pending_ticket": null
   }
 }
