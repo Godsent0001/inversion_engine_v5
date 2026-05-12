@@ -59,28 +59,14 @@ def create_population(
     b2 = np.random.randn(n_agents, 3).astype(np.float32) * 0.2
 
     # =========================================================
-    # 4. RRR (Risk-Reward Ratio) — FAMILY AWARE
+    # 4. RRR (Risk-Reward Ratio)
     # =========================================================
-    rrr = np.zeros(n_agents, dtype=np.float32)
-
-    rrr[families == "scalper"]  = np.random.choice([2,3,4], np.sum(families == "scalper"))
-    rrr[families == "intraday"] = np.random.choice([3,4,5,6], np.sum(families == "intraday"))
-    rrr[families == "swing"]    = np.random.choice([5,6,7,8], np.sum(families == "swing"))
-    rrr[families == "sniper"]   = np.random.choice([6,7,8,9,10], np.sum(families == "sniper"))
-
-    pop["rrr"] = rrr
+    pop["rrr"] = np.full(n_agents, 10.0, dtype=np.float32)
 
     # =========================================================
-    # 5. ATR MULTIPLIER — FAMILY AWARE
+    # 5. ATR MULTIPLIER
     # =========================================================
-    atr = np.zeros(n_agents, dtype=np.float32)
-
-    atr[families == "scalper"]  = np.random.choice([0.6,0.8,1.0], np.sum(families == "scalper"))
-    atr[families == "intraday"] = np.random.choice([0.8,1.0,1.2,1.4], np.sum(families == "intraday"))
-    atr[families == "swing"]    = np.random.choice([1.2,1.4,1.6,1.8], np.sum(families == "swing"))
-    atr[families == "sniper"]   = np.random.choice([1.4,1.6,1.8,2.0], np.sum(families == "sniper"))
-
-    pop["atr"] = atr
+    pop["atr"] = np.full(n_agents, 0.6, dtype=np.float32)
 
     # =========================================================
     # 6. THRESHOLD (CRITICAL UPGRADE)
@@ -95,16 +81,9 @@ def create_population(
     pop["threshold"] = threshold.astype(np.float32)
 
     # =========================================================
-    # 7. COOLDOWN (ANTI-OVERTRADING)
+    # 7. COOLDOWN (DISABLED)
     # =========================================================
-    cooldown = np.zeros(n_agents, dtype=np.int32)
-
-    cooldown[families == "scalper"]  = np.random.randint(1, 5, np.sum(families == "scalper"))
-    cooldown[families == "intraday"] = np.random.randint(3, 10, np.sum(families == "intraday"))
-    cooldown[families == "swing"]    = np.random.randint(5, 20, np.sum(families == "swing"))
-    cooldown[families == "sniper"]   = np.random.randint(10, 30, np.sum(families == "sniper"))
-
-    pop["cooldown"] = cooldown
+    pop["cooldown"] = np.zeros(n_agents, dtype=np.int32)
 
     # =========================================================
     # 8. AGGRESSION (POSITION INTENSITY)
