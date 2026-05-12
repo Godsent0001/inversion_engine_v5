@@ -18,7 +18,7 @@ TOTAL_DAYS = 365 * 2
 BATCH_DAYS = 30
 
 # Output
-OUTPUT_PATH = r"C:\Users\USER\Documents\inversion_engine_v5\trader_sim\data\raw\xauusd_5m.csv"
+OUTPUT_PATH = r"C:\Users\USER\Documents\inversion_engine_v5\inversion_engine_v5\research\data\raw\xauusd_5m.csv"
 
 
 # ==================================================
