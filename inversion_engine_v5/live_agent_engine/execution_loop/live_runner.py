@@ -104,41 +104,68 @@ class LiveRunner:
                 if agent_id in self.execution_lock:
                     continue
 
+                # 1. CHECK IF IN POSITION
                 if self.router.has_open_position(agent_id):
                     continue
 
+                # 2. CHECK COOLDOWN
                 if self.portfolio.portfolios[str(agent_id)]["cooldown"] > 0:
                     continue
 
-                action, confidence = self.decision_engine.decide(
+                # 3. GET AGENT DECISION (INCLUDING STOP PRICE)
+                action, confidence, entry_p = self.decision_engine.decide(
                     agent,
-                    latest_features
+                    latest_features,
+                    high,
+                    low,
+                    close
                 )
 
+                # 4. HANDLE PENDING ORDERS
+                # Fetch currently active pending orders from MT5 for this agent
+                active_pending = self.router.get_agent_pending_orders(agent_id, settings.SYMBOL)
+
+                # We also check our stored ticket to be safe
+                stored_ticket = self.portfolio.get_pending_ticket(agent_id)
+
                 if action == 0:
+                    # Neutral signal does NOT cancel pending orders (as per research logic)
+                    # But we should verify if the stored ticket still exists on server
+                    if stored_ticket:
+                        exists = any(o.ticket == stored_ticket for o in active_pending)
+                        if not exists:
+                            # It was either triggered or manually cancelled
+                            self.portfolio.set_pending_ticket(agent_id, None)
                     continue
 
+                # If we have a directional signal (1 or -1), we must ensure we have the NEWEST one
+                # First, cancel ALL existing pending orders for this agent on MT5
+                for po in active_pending:
+                    cancel_req = self.order_manager.build_cancel_request(po.ticket)
+                    self.order_manager.execute(cancel_req)
+                    execution_logger.info(f"Cancelled old pending order {po.ticket} for agent {agent_id}")
+
+                self.portfolio.set_pending_ticket(agent_id, None)
+
+                # 5. EXECUTE NEW PENDING STOP ORDER
                 equity = self.portfolio.get_equity(agent_id)
 
-                # =========================
-                # TRADE PARAMETERS (IMPORTANT PART)
-                # =========================
                 rrr_used = float(agent["rrr"])
                 atr_mult_used = float(agent["atr"])
 
                 dist = latest_atr * atr_mult_used
 
-                if action == 1:
-                    sl = current_price - dist
-                    tp = current_price + dist * rrr_used
-                else:
-                    sl = current_price + dist
-                    tp = current_price - dist * rrr_used
+                if action == 1: # BUY STOP
+                    sl = entry_p - dist
+                    tp = entry_p + dist * rrr_used
+                else: # SELL STOP
+                    sl = entry_p + dist
+                    tp = entry_p - dist * rrr_used
 
                 lots = self.risk_engine.calculate_lot_size(
                     settings.SYMBOL,
                     equity,
-                    current_price,
+                    entry_p,
                     sl
                 )
 
@@ -147,7 +174,7 @@ class LiveRunner:
                     settings.SYMBOL,
                     action,
                     lots,
-                    current_price,
+                    entry_p,
                     sl,
                     tp,
                     comment=f"Agent {agent_id}"
@@ -156,26 +183,23 @@ class LiveRunner:
                 result = self.order_manager.execute(request)
 
                 if result and result.retcode == 10009:
+                    # Store the new ticket ID for persistence
+                    self.portfolio.set_pending_ticket(agent_id, result.order)
 
-                    # 🔥 ENHANCED TRADE LOG
                     trade_logger.info(
                         f"""
                         ================================
-                        TRADE EXECUTED
+                        STOP ORDER PLACED
                         Agent     : {agent_id}
-                        Action    : {action}
+                        Action    : {action} (Stop)
                         Confidence: {confidence:.2f}
-                        RRR       : {rrr_used}
-                        ATR Mult  : {atr_mult_used}
-                        Entry     : {current_price}
+                        Price     : {entry_p}
                         SL        : {sl}
                         TP        : {tp}
                         Lot       : {lots}
                         ================================
                         """
                     )
-
-                    self.execution_lock.add(agent_id)
                     time.sleep(0.5)
 
             self.portfolio.decrement_cooldowns()

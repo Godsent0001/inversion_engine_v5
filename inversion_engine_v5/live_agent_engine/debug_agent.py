@@ -11,11 +11,11 @@ MODELS_DIR = os.path.join(BASE_DIR, "models")
 # LIST YOUR AGENTS HERE
 # =========================
 AGENT_FILES = [
-    "agent_36.pkl",
-    "agent_57.pkl",
-    "agent_58.pkl",
-    "agent_2669.pkl",
-    "agent_4408.pkl",
+    "agent_2865.pkl",
+    "agent_3709.pkl",
+    "agent_3229.pkl",
+    "agent_546.pkl",
+    "agent_404.pkl",
 ]
 
 # =========================
@@ -43,7 +43,6 @@ def print_agent(agent_id, agent):
 
     # 🔑 Print important parameters first
     print("\n--- CORE PARAMETERS ---")
-    print("family       :", agent.get("family"))
     print("rrr          :", agent.get("rrr"))
     print("atr          :", agent.get("atr"))
     print("threshold    :", agent.get("threshold"))
@@ -56,11 +55,6 @@ def print_agent(agent_id, agent):
         print("w1 shape     :", getattr(agent["w1"], "shape", "N/A"))
     if "w2" in agent:
         print("w2 shape     :", getattr(agent["w2"], "shape", "N/A"))
-
-    # ⚠️ If you REALLY want full dump, uncomment below:
-    # print("\n--- FULL MODEL ---")
-    # for k, v in agent.items():
-    #     print(k, ":", v)
 
 
 # =========================
