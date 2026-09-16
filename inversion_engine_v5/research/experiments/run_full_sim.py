@@ -1,243 +1,208 @@
 import numpy as np
 import pandas as pd
+import os
+import json
+from tqdm import tqdm
 
 from research.core.population import create_population
 from research.simulation.engine import run_simulation
 from research.portfolio.exporter import export_agents
-from research.core.metrics import compute_metrics
-
 from shared.indicators.pipeline import build_features
-
 
 # -------------------------
 # LOAD DATA
 # -------------------------
-def load_data(path="data/raw/xauusd_30m.csv"):
-
+def load_data(path="inversion_engine_v5/research/data/raw/xauusd_5m.csv"):
     df = pd.read_csv(path)
+    df["time"] = pd.to_datetime(df["time"])
+
+    # Pre-calculate Friday Evening Mask (>= 19:00 Friday)
+    # Friday is weekday 4.
+    df["is_friday_evening"] = (df["time"].dt.weekday == 4) & (df["time"].dt.hour >= 19)
 
     open_ = df["open"].values.astype(np.float32)
     high = df["high"].values.astype(np.float32)
     low = df["low"].values.astype(np.float32)
     close = df["close"].values.astype(np.float32)
+    is_friday_evening = df["is_friday_evening"].values.astype(bool)
 
-    return open_, high, low, close
-
+    return open_, high, low, close, is_friday_evening, df["time"]
 
 # -------------------------
-# SPLIT INTO 4 STAGES
+# SPLIT INTO 24 ROUNDS (CALENDAR MONTHS)
 # -------------------------
-def split_stages(features, open_, high, low, close, atr):
+def split_into_months(features, open_, high, low, close, atr, is_friday_evening, timestamps):
+    df = pd.DataFrame({"time": timestamps})
+    df["month_idx"] = df["time"].dt.year * 12 + df["time"].dt.month
+    unique_months = sorted(df["month_idx"].unique())
 
-    n = len(close)
-    step = n // 4
-
-    stages = []
-
-    for i in range(4):
-        start = i * step
-        end = (i + 1) * step if i < 3 else n
-
-        stages.append((
-            features[start:end],
-            open_[start:end],
-            high[start:end],
-            low[start:end],
-            close[start:end],
-            atr[start:end]
+    rounds = []
+    for m_idx in unique_months[:24]:
+        mask = (df["month_idx"] == m_idx).values
+        rounds.append((
+            features[mask],
+            open_[mask],
+            high[mask],
+            low[mask],
+            close[mask],
+            atr[mask],
+            is_friday_evening[mask],
+            m_idx
         ))
 
-    return stages
-
+    return rounds
 
 # -------------------------
-# STAGE FILTER (UPGRADED)
+# STAGE FILTER
 # -------------------------
 def stage_filter(stats):
     """
-    Strong survival filter
+    Survival filter: Profitable (Equity > 1.0)
     """
-
     equity = stats["equity"]
-    trades = stats["trades"]
-    winrate = stats.get("winrate", np.zeros_like(equity))
-    # max_dd = stats.get("max_drawdown", np.ones_like(equity))
-
-    cond1 = equity > 1.02         # profitable (lowered for stages)
-    cond2 = trades > 5            # enough trades
-    cond3 = winrate > 0.25        # not random
-
-    return cond1 & cond2 & cond3
-
+    return equity > 1.0
 
 # -------------------------
-# SAFE SUBSET (IMPORTANT)
+# SAFE SUBSET
 # -------------------------
 def subset_population(pop, indices):
-    """
-    Keeps both numpy arrays and non-array fields like 'family'
-    """
-
     new_pop = {}
-
     for k, v in pop.items():
-
         if isinstance(v, np.ndarray):
             new_pop[k] = v[indices]
-
         elif isinstance(v, list):
             new_pop[k] = [v[i] for i in indices]
-
         else:
-            # keep scalar/global config
             new_pop[k] = v
-
     return new_pop
-
 
 # -------------------------
 # MAIN
 # -------------------------
 def main():
+    output_dir = "inversion_engine_v5/outputs"
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
-    print("Loading data...")
-    open_, high, low, close = load_data()
+    print("Loading 5m data...")
+    open_, high, low, close, is_friday_evening, timestamps = load_data()
 
-    # -------------------------
-    # FEATURES
-    # -------------------------
-    print("Building features (pipeline)...")
+    print("Building features...")
     features, atr = build_features(high, low, close)
 
-    # -------------------------
-    # WARMUP TRIM
-    # -------------------------
+    # Warmup trim
     warmup = 50
-
     features = features[warmup:]
     atr = atr[warmup:]
     open_ = open_[warmup:]
     high = high[warmup:]
     low = low[warmup:]
     close = close[warmup:]
+    is_friday_evening = is_friday_evening[warmup:]
+    timestamps = timestamps[warmup:]
 
     print(f"Data after warmup: {len(close)} candles")
 
-    # -------------------------
-    # POPULATION
-    # -------------------------
-    print("Creating population...")
+    print("Creating population (100,000 agents)...")
     pop = create_population(
         n_agents=100_000,
         input_size=features.shape[1]
     )
 
-    # -------------------------
-    # STAGES
-    # -------------------------
-    print("Splitting into 4 stages...")
-    stages = split_stages(features, open_, high, low, close, atr)
+    print("Splitting into 24 monthly rounds...")
+    rounds = split_into_months(features, open_, high, low, close, atr, is_friday_evening, timestamps)
 
-    survivors = np.arange(len(pop["rrr"]))
+    survivors_indices = np.arange(len(pop["rrr"]))
 
     # -------------------------
-    # STAGE LOOP
+    # TOURNAMENT LOOP
     # -------------------------
-    for i, stage in enumerate(stages):
+    for i, round_data in enumerate(rounds):
+        f, o, h, l, c, a, ife, m_idx = round_data
+        print(f"\n=== ROUND {i+1} (Month Index: {m_idx}) ===", flush=True)
 
-        print(f"\n=== STAGE {i+1} ===", flush=True)
-
-        f, o, h, l, c, a = stage
-
-        pop_stage = subset_population(pop, survivors)
-
-        stats = run_simulation(pop_stage, f, o, h, l, c, a)
+        pop_round = subset_population(pop, survivors_indices)
+        stats = run_simulation(pop_round, f, o, h, l, c, a, ife)
 
         mask = stage_filter(stats)
-        survivors = survivors[mask]
+        survivors_indices = survivors_indices[mask]
 
-        print(f"Survivors: {len(survivors)}", flush=True)
+        print(f"Survivors: {len(survivors_indices)}", flush=True)
 
-        # Diagnostics
-        if len(survivors) > 0:
-            print(f"Avg equity: {stats['equity'][mask].mean():.3f}", flush=True)
-            print(f"Avg trades: {stats['trades'][mask].mean():.1f}", flush=True)
-
-        # Safety stop
-        if len(survivors) < 20:
-            print("Too few survivors, stopping early.")
+        if len(survivors_indices) == 0:
+            print("No survivors left.")
             break
 
     # -------------------------
-    # FINAL RUN
+    # FINAL EVALUATION (Full Dataset)
     # -------------------------
-    print("\nRunning final evaluation on full dataset...")
+    if len(survivors_indices) > 0:
+        print("\nRunning final evaluation on full dataset for survivors...")
+        final_pop = subset_population(pop, survivors_indices)
+        final_stats = run_simulation(final_pop, features, open_, high, low, close, atr, is_friday_evening)
 
-    final_pop = subset_population(pop, survivors)
+        print("Calculating Average Monthly Losing Streak...")
+        final_agent_count = len(survivors_indices)
+        monthly_streaks_matrix = np.zeros((final_agent_count, len(rounds)), dtype=np.int32)
 
-    final_stats = run_simulation(final_pop, features, open_, high, low, close, atr)
+        for i, round_data in enumerate(rounds):
+            f, o, h, l, c, a, ife, _ = round_data
+            round_stats = run_simulation(final_pop, f, o, h, l, c, a, ife)
+            monthly_streaks_matrix[:, i] = round_stats["max_losing_streak"]
 
-    # -------------------------
-    # METRICS
-    # -------------------------
-    print("Computing metrics...")
+        avg_monthly_losing_streak = np.mean(monthly_streaks_matrix, axis=1)
 
-    # We use a simplified metrics computation for now as the JIT returns final stats
-    metrics = {
-        "final_equity": final_stats["equity"],
-        "winrate": final_stats["winrate"],
-        "trades": final_stats["trades"],
-        "max_drawdown": final_stats["max_drawdown"]
-    }
+        # -------------------------
+        # METRICS
+        # -------------------------
+        metrics = {
+            "final_equity": final_stats["equity"],
+            "winrate": final_stats["winrate"],
+            "trades": final_stats["trades"],
+            "max_losing_streak": final_stats["max_losing_streak"],
+            "avg_monthly_losing_streak": avg_monthly_losing_streak,
+            "sharpe": final_stats["sharpe"]
+        }
 
-    # -------------------------
-    # SAVE
-    # -------------------------
-    print("Saving results...")
+        # -------------------------
+        # SAVE
+        # -------------------------
+        print("Saving results...")
 
-    # 1. Full binary data
-    np.save("outputs/survivors.npy", {
-        "metrics": metrics,
-        "population": final_pop,
-        "stats": final_stats
-    })
+        np.save(os.path.join(output_dir, "survivors.npy"), {
+            "metrics": metrics,
+            "population": final_pop,
+            "stats": final_stats
+        })
 
-    # 2. Human-readable metrics (JSON)
-    import json
-    def convert_to_list(obj):
-        if isinstance(obj, np.ndarray): return obj.tolist()
-        if isinstance(obj, (np.float32, np.float64)): return float(obj)
-        return obj
+        def convert_to_list(obj):
+            if isinstance(obj, np.ndarray): return obj.tolist()
+            if isinstance(obj, (np.float32, np.float64, np.float16)): return float(obj)
+            return obj
 
-    readable_metrics = {k: convert_to_list(v) for k, v in metrics.items()}
-    with open("outputs/survivors_metrics.json", "w") as f:
-        json.dump(readable_metrics, f, indent=2)
+        readable_metrics = {k: convert_to_list(v) for k, v in metrics.items()}
+        with open(os.path.join(output_dir, "survivors_metrics.json"), "w") as f:
+            json.dump(readable_metrics, f, indent=2)
 
-    # 3. Top agents ranking (CSV)
-    df_metrics = pd.DataFrame({
-        "agent_idx": np.arange(len(metrics["final_equity"])),
-        "final_equity": metrics["final_equity"],
-        "winrate": metrics["winrate"],
-        "trades": metrics["trades"],
-        "max_drawdown": metrics["max_drawdown"]
-    })
-    df_metrics = df_metrics.sort_values("final_equity", ascending=False)
-    df_metrics.to_csv("outputs/top_agents.csv", index=False)
+        df_metrics = pd.DataFrame({
+            "agent_idx": survivors_indices,
+            "final_equity": metrics["final_equity"],
+            "winrate": metrics["winrate"],
+            "trades": metrics["trades"],
+            "max_losing_streak": metrics["max_losing_streak"],
+            "avg_monthly_losing_streak": metrics["avg_monthly_losing_streak"],
+            "sharpe": metrics["sharpe"]
+        })
+        df_metrics = df_metrics.sort_values("final_equity", ascending=False)
+        df_metrics.to_csv(os.path.join(output_dir, "top_agents.csv"), index=False)
 
-    print("Saved: outputs/survivors.npy, outputs/survivors_metrics.json, outputs/top_agents.csv")
+        export_path = export_agents(pop, survivors_indices, folder=output_dir)
+        print(f"Exported models -> {export_path}")
 
-    # -------------------------
-    # EXPORT
-    # -------------------------
-    export_path = export_agents(pop, survivors)
-
-    print(f"Exported models → {export_path}")
+    else:
+        print("No agents survived the tournament.")
 
     print("\nDONE ✅")
 
-
-# -------------------------
-# ENTRY
-# -------------------------
 if __name__ == "__main__":
     main()
