@@ -28,18 +28,21 @@ def simulate_trading_numba(
     predictions,      # int array (N,) -> 0: BUY, 1: NEUTRAL, 2: SELL
     window_ids,       # int array (N,) -> 2H window index
     month_ids,        # int array (N,) -> 1..12 month index
+    day_ids,          # int array (N,) -> 0..num_days-1 day index
     opens,            # float array (N,)
     highs,            # float array (N,)
     lows,             # float array (N,)
     closes,           # float array (N,)
     atrs,             # float array (N,)
     spreads,          # float array (N,)
+    num_days=22,      # int -> total number of trading days in the slice
     atr_mult=3.6,
     rrr=2.0
 ):
     """
     Lightning-fast Numba simulator enforcing 2-hour window locking,
     1:2 RRR, entry on next bar open, and monthly early termination if monthly return < 0.
+    Calculates standard daily annualized Sharpe ratio: (mean_daily / std_daily) * sqrt(252).
     """
     N = len(predictions)
 
@@ -47,6 +50,9 @@ def simulate_trading_numba(
     monthly_pnls = np.zeros(13, dtype=np.float64)       # index 1..12
     monthly_sharpes = np.zeros(13, dtype=np.float64)    # index 1..12
     monthly_trade_counts = np.zeros(13, dtype=np.int32) # index 1..12
+
+    # Daily PnL tracking for Sharpe calculation
+    daily_pnls = np.zeros(35, dtype=np.float64)
 
     # Active trade storage
     MAX_TRADES = 1000
@@ -63,7 +69,6 @@ def simulate_trading_numba(
     pending_atr = 0.0
 
     current_month = month_ids[0]
-    month_trade_returns = np.zeros(10000, dtype=np.float64)
     month_trade_idx = 0
 
     disqualified = False
@@ -74,24 +79,25 @@ def simulate_trading_numba(
 
         # Check if month changed
         if m != current_month:
-            # Evaluate ended month
+            # Evaluate ended month using daily returns
             sum_pnl = 0.0
-            for k in range(month_trade_idx):
-                sum_pnl += month_trade_returns[k]
+            for d in range(num_days):
+                sum_pnl += daily_pnls[d]
 
             monthly_pnls[current_month] = sum_pnl
             monthly_trade_counts[current_month] = month_trade_idx
 
-            if month_trade_idx > 1:
-                mean_r = sum_pnl / month_trade_idx
-                var_r = 0.0
-                for k in range(month_trade_idx):
-                    diff = month_trade_returns[k] - mean_r
-                    var_r += diff * diff
-                std_r = np.sqrt(var_r / (month_trade_idx - 1)) + 1e-8
-                monthly_sharpes[current_month] = (mean_r / std_r) * np.sqrt(month_trade_idx)
-            elif month_trade_idx == 1:
-                monthly_sharpes[current_month] = 1.0 if sum_pnl > 0 else -1.0
+            if num_days > 1:
+                mean_d = sum_pnl / num_days
+                var_d = 0.0
+                for d in range(num_days):
+                    diff = daily_pnls[d] - mean_d
+                    var_d += diff * diff
+                std_d = np.sqrt(var_d / (num_days - 1)) + 1e-8
+                if std_d > 1e-7:
+                    monthly_sharpes[current_month] = (mean_d / std_d) * np.sqrt(252.0)
+                else:
+                    monthly_sharpes[current_month] = 0.0
             else:
                 monthly_sharpes[current_month] = 0.0
 
@@ -103,6 +109,7 @@ def simulate_trading_numba(
             months_survived += 1
             current_month = m
             month_trade_idx = 0
+            daily_pnls.fill(0.0)
 
         # Reset window lock on new 2H window
         win_id = window_ids[i]
@@ -182,9 +189,12 @@ def simulate_trading_numba(
                 # Deduct spread cost (proportional to price)
                 spread_cost = (c_spread * 1e-5) / entry_p
                 net_pnl = pnl - spread_cost
-                if month_trade_idx < 10000:
-                    month_trade_returns[month_trade_idx] = net_pnl
-                    month_trade_idx += 1
+
+                # Accumulate into daily PnL
+                d_idx = day_ids[i]
+                if d_idx >= 0 and d_idx < 35:
+                    daily_pnls[d_idx] += net_pnl
+                month_trade_idx += 1
 
                 # Remove trade by swapping with last active
                 num_active -= 1
@@ -205,23 +215,26 @@ def simulate_trading_numba(
             window_locked = True
 
     # Evaluate final month if not disqualified
-    if not disqualified and month_trade_idx > 0:
+    if not disqualified:
         sum_pnl = 0.0
-        for k in range(month_trade_idx):
-            sum_pnl += month_trade_returns[k]
+        for d in range(num_days):
+            sum_pnl += daily_pnls[d]
         monthly_pnls[current_month] = sum_pnl
         monthly_trade_counts[current_month] = month_trade_idx
 
-        if month_trade_idx > 1:
-            mean_r = sum_pnl / month_trade_idx
-            var_r = 0.0
-            for k in range(month_trade_idx):
-                diff = month_trade_returns[k] - mean_r
-                var_r += diff * diff
-            std_r = np.sqrt(var_r / (month_trade_idx - 1)) + 1e-8
-            monthly_sharpes[current_month] = (mean_r / std_r) * np.sqrt(month_trade_idx)
+        if num_days > 1:
+            mean_d = sum_pnl / num_days
+            var_d = 0.0
+            for d in range(num_days):
+                diff = daily_pnls[d] - mean_d
+                var_d += diff * diff
+            std_d = np.sqrt(var_d / (num_days - 1)) + 1e-8
+            if std_d > 1e-7:
+                monthly_sharpes[current_month] = (mean_d / std_d) * np.sqrt(252.0)
+            else:
+                monthly_sharpes[current_month] = 0.0
         else:
-            monthly_sharpes[current_month] = 1.0 if sum_pnl > 0 else -1.0
+            monthly_sharpes[current_month] = 0.0
 
         if sum_pnl < 0.0:
             disqualified = True
