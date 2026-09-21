@@ -56,9 +56,6 @@ def run_simulation():
     months_map = {ym: idx + 1 for idx, ym in enumerate(unique_ym)}
     month_ids = np.array([months_map[(t.year, t.month)] for t in cleaned_df['time']], dtype=np.int32)
 
-    # Day index mapping for daily Sharpe calculation
-    day_ids_global = (cleaned_df['time'].dt.floor('D') - cleaned_df['time'].min()).dt.days.values.astype(np.int32)
-
     opens = cleaned_df['open'].values.astype(np.float64)
     highs = cleaned_df['high'].values.astype(np.float64)
     lows = cleaned_df['low'].values.astype(np.float64)
@@ -87,10 +84,6 @@ def run_simulation():
         end_idx = m_indices[-1] + 1
         warmup_offset = m_indices[0] - start_idx
 
-        m_day_ids = day_ids_global[m_indices]
-        _, day_indices = np.unique(m_day_ids, return_inverse=True)
-        num_days = int(len(np.unique(m_day_ids)))
-
         monthly_slices[m] = {
             'start_idx': start_idx,
             'end_idx': end_idx,
@@ -98,8 +91,6 @@ def run_simulation():
             'm_indices': m_indices,
             'win_ids': window_ids[m_indices],
             'm_ids': month_ids[m_indices],
-            'day_ids': day_indices.astype(np.int32),
-            'num_days': num_days,
             'opens': opens[m_indices],
             'highs': highs[m_indices],
             'lows': lows[m_indices],
@@ -150,14 +141,12 @@ def run_simulation():
                     m_preds,
                     ms['win_ids'],
                     ms['m_ids'],
-                    ms['day_ids'],
                     ms['opens'],
                     ms['highs'],
                     ms['lows'],
                     ms['closes'],
                     ms['atrs'],
-                    ms['spreads'],
-                    num_days=ms['num_days']
+                    ms['spreads']
                 )
 
                 pnl_m = m_pnls[m]
