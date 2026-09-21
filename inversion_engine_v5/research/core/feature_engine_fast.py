@@ -305,11 +305,17 @@ def build_all_features_fast(df_m1, markets_dir=None):
     X_mat = X_mat[:, :col_idx]
     X_mat = np.nan_to_num(X_mat, nan=0.0, posinf=0.0, neginf=0.0)
 
-    # Standardize columns in place
-    means = np.mean(X_mat, axis=0)
-    stds = np.std(X_mat, axis=0)
-    stds[stds == 0] = 1.0
-    X_mat -= means
-    X_mat /= stds
+    # Expanding cumulative standardization column-by-column (ultra memory efficient, zero look-ahead bias)
+    # For bar t, mean and std are computed over bars 0..t
+    counts = np.arange(1, N + 1, dtype=np.float32)
+    for c in range(col_idx):
+        col = X_mat[:, c]
+        cum_sum = np.cumsum(col, dtype=np.float64)
+        cum_sq = np.cumsum(col.astype(np.float64)**2)
+        exp_mean = (cum_sum / counts).astype(np.float32)
+        exp_var = np.maximum((cum_sq / counts).astype(np.float32) - exp_mean**2, 1e-8)
+        exp_std = np.sqrt(exp_var)
+        norm_col = (col - exp_mean) / exp_std
+        X_mat[:, c] = np.nan_to_num(norm_col, nan=0.0, posinf=0.0, neginf=0.0)
 
     return X_mat.astype(np.float32), df
