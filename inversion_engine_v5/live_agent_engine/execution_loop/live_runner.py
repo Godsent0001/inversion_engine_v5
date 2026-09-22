@@ -1,9 +1,18 @@
 import time
+import os
+import sys
 import numpy as np
-from datetime import datetime
+import pandas as pd
+from datetime import datetime, timezone
 
 from config import settings
-from shared.indicators.pipeline import build_features
+
+# Ensure inversion_engine_v5 root is accessible
+base_engine_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+if base_engine_dir not in sys.path:
+    sys.path.append(base_engine_dir)
+
+from research.core.feature_engine_fast import build_all_features_fast
 from agents.agent_loader import AgentLoader
 from agents.decision_engine import DecisionEngine
 from agents.portfolio_manager import PortfolioManager
@@ -38,6 +47,16 @@ class LiveRunner:
 
         self.execution_lock = set()
 
+        # Track 2-hour window locking per agent: agent_id -> last_traded_window_id
+        self.last_traded_window = {}
+
+    def _close_all_positions_for_weekend(self):
+        """Closes all active open positions before Friday market close."""
+        for agent_id in self.agent_ids:
+            if self.router.has_open_position(agent_id):
+                execution_logger.info(f"Friday exit rule: Closing position for Agent {agent_id}")
+                self.order_manager.close_position(agent_id, settings.SYMBOL)
+
     def run_once(self):
 
         try:
@@ -55,13 +74,14 @@ class LiveRunner:
 
             execution_logger.info("Checking for new candle...")
 
+            fetch_n = getattr(settings, "FETCH_BARS", 350)
             df = self.connector.get_latest_data(
                 settings.SYMBOL,
                 settings.TIMEFRAME,
-                n_bars=200
+                n_bars=fetch_n
             )
 
-            if df is None or len(df) < 60:
+            if df is None or len(df) < 250:
                 return
 
             current_candle_time = df.iloc[-1]["time"]
@@ -71,27 +91,44 @@ class LiveRunner:
 
             self.last_candle_time = current_candle_time
 
-            execution_logger.info(
-                f"New candle detected: {datetime.fromtimestamp(current_candle_time)}"
-            )
+            dt_utc = datetime.fromtimestamp(current_candle_time, tz=timezone.utc)
+            execution_logger.info(f"New candle detected: {dt_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
-            df_closed = df.iloc[:-1]
+            # =========================
+            # FRIDAY WEEKEND EXIT RULE
+            # =========================
+            # Friday = day 4 (Monday=0). Close open positions & suppress new entries starting at 20:00 UTC (1hr before close)
+            friday_close_hour = getattr(settings, "FRIDAY_CLOSE_HOUR_GMT", 20)
+            if dt_utc.weekday() == 4 and dt_utc.hour >= friday_close_hour:
+                execution_logger.info(f"Friday restriction active ({dt_utc.strftime('%H:%M UTC')}). Closing positions and skipping entries.")
+                self._close_all_positions_for_weekend()
+                return
 
-            high = df_closed["high"].values.astype(np.float32)
-            low = df_closed["low"].values.astype(np.float32)
-            close = df_closed["close"].values.astype(np.float32)
+            # Closed bars evaluation: use df.iloc[:-1] (completed candles up to candle t)
+            df_closed = df.iloc[:-1].copy()
 
-            features_full, atr_full = build_features(high, low, close)
+            if not pd.api.types.is_datetime64_any_dtype(df_closed['time']):
+                df_closed['time'] = pd.to_datetime(df_closed['time'], unit='s')
 
-            latest_features = features_full[-1]
-            latest_atr = atr_full[-1]
+            # Calculate ATR14 from closed bars
+            highs = df_closed["high"].values.astype(np.float64)
+            lows = df_closed["low"].values.astype(np.float64)
+            atrs_rolling = pd.Series(highs - lows).rolling(getattr(settings, "ATR_PERIOD", 14)).mean().ffill().bfill().values
+            latest_atr = float(atrs_rolling[-1])
 
+            # Build full 328 feature matrix using exact research feature engine
+            X_np, cleaned_df = build_all_features_fast(df_closed)
+
+            # Determine 2-hour window ID of current completed bar
+            current_bar_time = cleaned_df.iloc[-1]['time']
+            window_id = int((current_bar_time.floor('2h') - pd.Timestamp('1970-01-01')).total_seconds() // 7200)
+
+            # Entry price is Open of the new current bar (t+1)
             current_price = df.iloc[-1]["open"]
-
             spread = self.connector.get_spread(settings.SYMBOL)
 
             execution_logger.info(
-                f"Market | Price: {current_price:.2f} | ATR: {latest_atr:.4f} | Spread: {spread}"
+                f"Market | Entry Price: {current_price:.2f} | ATR: {latest_atr:.4f} | Spread: {spread}"
             )
 
             # =========================
@@ -110,9 +147,21 @@ class LiveRunner:
                 if self.portfolio.portfolios[str(agent_id)]["cooldown"] > 0:
                     continue
 
+                # Enforce 2-hour window locking (max 1 trade per 2-hour window)
+                if self.last_traded_window.get(agent_id) == window_id:
+                    execution_logger.info(f"Agent {agent_id} already traded in 2H window {window_id}. Skipping.")
+                    continue
+
+                # Format input features for model: sequence length 10 -> shape (10, 328)
+                seq_len = agent.get("seq_len", 10)
+                if len(X_np) < seq_len:
+                    continue
+
+                latest_seq = X_np[-seq_len:]
+
                 action, confidence = self.decision_engine.decide(
                     agent,
-                    latest_features
+                    latest_seq
                 )
 
                 if action == 0:
@@ -121,10 +170,10 @@ class LiveRunner:
                 equity = self.portfolio.get_equity(agent_id)
 
                 # =========================
-                # TRADE PARAMETERS (IMPORTANT PART)
+                # TRADE PARAMETERS PARITY
                 # =========================
-                rrr_used = float(agent["rrr"])
-                atr_mult_used = float(agent["atr"])
+                rrr_used = float(agent["rrr"])        # 2.0
+                atr_mult_used = float(agent["atr"])   # 3.6
 
                 dist = latest_atr * atr_mult_used
 
@@ -157,7 +206,8 @@ class LiveRunner:
 
                 if result and result.retcode == 10009:
 
-                    # 🔥 ENHANCED TRADE LOG
+                    self.last_traded_window[agent_id] = window_id
+
                     trade_logger.info(
                         f"""
                         ================================
