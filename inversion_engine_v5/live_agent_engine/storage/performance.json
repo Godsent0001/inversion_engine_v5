@@ -43,5 +43,9 @@
     "equity": 10000.0,
     "cooldown": 0,
     "pending_ticket": null
+  },
+  "464": {
+    "equity": 10000.0,
+    "cooldown": 0
   }
 }

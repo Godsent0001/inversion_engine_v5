@@ -1360,3 +1360,6 @@
 2026-05-01 19:09:46,614 INFO Checking for new candle...
 2026-05-01 19:09:47,448 INFO Shutdown requested by user
 2026-05-01 19:09:47,451 INFO MT5 DISCONNECTED CLEANLY
+2026-09-22 02:38:49,741 INFO Checking for new candle...
+2026-09-22 02:38:49,743 INFO New candle detected: 2025-05-16 20:29:00 UTC
+2026-09-22 02:38:49,743 INFO Friday restriction active (20:29 UTC). Closing positions and skipping entries.
