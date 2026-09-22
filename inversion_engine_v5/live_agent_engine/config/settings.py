@@ -14,7 +14,7 @@ FRIDAY_CLOSE_HOUR_GMT = 20  # Close trades 1 hr before Friday market close (20:0
 MT5_LOGIN = 435643605
 MT5_PASSWORD = "@Vivercity1(e1)"
 MT5_SERVER = "Exness-MT5Trial9"
-SLIPPAGE = 3
+SLIPPAGE = 1000  # Large slippage tolerance to accept all market orders without spread/slippage filter rejection
 MAGIC_BASE = 1000
 
 # Directory Paths

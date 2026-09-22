@@ -4,7 +4,7 @@ from monitoring.logger import execution_logger, error_logger
 
 
 class OrderManager:
-    def __init__(self, connector, slippage=3, max_retries=3):
+    def __init__(self, connector, slippage=1000, max_retries=3):
         self.connector = connector
         self.slippage = slippage
         self.max_retries = max_retries
