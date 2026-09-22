@@ -138,9 +138,6 @@ class LiveRunner:
 
                 agent_id = agent["id"]
 
-                if self.portfolio.portfolios[str(agent_id)]["cooldown"] > 0:
-                    continue
-
                 # Enforce 2-hour window locking (max 1 trade per 2-hour window)
                 if self.last_traded_window.get(agent_id) == window_id:
                     execution_logger.info(f"Agent {agent_id} already traded in 2H window {window_id}. Skipping.")
@@ -221,8 +218,6 @@ class LiveRunner:
 
                     self.execution_lock.add(agent_id)
                     time.sleep(0.5)
-
-            self.portfolio.decrement_cooldowns()
 
         except Exception as e:
             import traceback
