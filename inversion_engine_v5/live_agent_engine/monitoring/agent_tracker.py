@@ -80,21 +80,11 @@ class AgentTracker:
 
                     self.portfolio.update_equity(agent_id, pnl_percent)
 
-                    # =========================
-                    # APPLY COOLDOWN
-                    # =========================
-                    cooldown_val = self.agents_dict[agent_id].get(
-                        "cooldown", 0
-                    )
-
-                    self.portfolio.set_cooldown(agent_id, cooldown_val)
-
                     trade_logger.info(
                         f"Agent {agent_id} CLOSED | "
                         f"Ticket={deal.ticket} | "
                         f"PnL={pnl:.2f} | "
-                        f"Equity={new_equity:.2f} | "
-                        f"Cooldown={cooldown_val}"
+                        f"Equity={new_equity:.2f}"
                     )
 
                 except Exception as inner_e:
