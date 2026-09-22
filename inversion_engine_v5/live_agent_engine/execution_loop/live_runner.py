@@ -138,12 +138,6 @@ class LiveRunner:
 
                 agent_id = agent["id"]
 
-                if agent_id in self.execution_lock:
-                    continue
-
-                if self.router.has_open_position(agent_id):
-                    continue
-
                 if self.portfolio.portfolios[str(agent_id)]["cooldown"] > 0:
                     continue
 
