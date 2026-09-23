@@ -155,6 +155,13 @@ class LiveRunner:
                     latest_seq
                 )
 
+                if action == 1:
+                    execution_logger.info(f"Agent {agent_id} decision: BUY (conf: {confidence:.2f})")
+                elif action == -1:
+                    execution_logger.info(f"Agent {agent_id} decision: SELL (conf: {confidence:.2f})")
+                else:
+                    execution_logger.info(f"Agent {agent_id} decision: NEUTRAL (conf: {confidence:.2f})")
+
                 if action == 0:
                     continue
 
