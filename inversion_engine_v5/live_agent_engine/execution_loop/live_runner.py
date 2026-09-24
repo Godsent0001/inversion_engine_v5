@@ -47,9 +47,6 @@ class LiveRunner:
 
         self.execution_lock = set()
 
-        # Track 2-hour window locking per agent: agent_id -> last_traded_window_id
-        self.last_traded_window = {}
-
     def _close_all_positions_for_weekend(self):
         """Closes all active open positions before Friday market close."""
         for agent_id in self.agent_ids:
@@ -138,9 +135,10 @@ class LiveRunner:
 
                 agent_id = agent["id"]
 
-                # Enforce 2-hour window locking (max 1 trade per 2-hour window)
-                if self.last_traded_window.get(agent_id) == window_id:
-                    execution_logger.info(f"Agent {agent_id} already traded in 2H window {window_id}. Skipping.")
+                # Enforce 2-hour window locking (max 1 trade attempt/execution per 2-hour window memory)
+                last_window = self.portfolio.get_last_traded_window(agent_id)
+                if last_window == window_id:
+                    execution_logger.info(f"Agent {agent_id} already acted in 2H window {window_id}. Skipping.")
                     continue
 
                 # Format input features for model: sequence length 10 -> shape (10, 328)
@@ -164,6 +162,9 @@ class LiveRunner:
 
                 if action == 0:
                     continue
+
+                # Lock the window immediately upon non-neutral decision (matching backtest window_locked = True)
+                self.portfolio.set_last_traded_window(agent_id, window_id)
 
                 equity = self.portfolio.get_equity(agent_id)
 
@@ -203,8 +204,6 @@ class LiveRunner:
                 result = self.order_manager.execute(request)
 
                 if result and result.retcode == 10009:
-
-                    self.last_traded_window[agent_id] = window_id
 
                     trade_logger.info(
                         f"""
