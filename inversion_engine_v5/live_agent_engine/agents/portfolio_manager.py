@@ -31,8 +31,11 @@ class PortfolioManager:
             if str(aid) not in data:
                 data[str(aid)] = {
                     "equity": float(self.starting_balance),
-                    "cooldown": int(0)
+                    "cooldown": int(0),
+                    "last_traded_window": int(-1)
                 }
+            elif "last_traded_window" not in data[str(aid)]:
+                data[str(aid)]["last_traded_window"] = int(-1)
 
         self._save(data)
         return data
@@ -83,6 +86,21 @@ class PortfolioManager:
     # -------------------------
     def get_equity(self, agent_id):
         return float(self.portfolios[str(agent_id)]["equity"])
+
+    # -------------------------
+    # LAST TRADED WINDOW MEMORY
+    # -------------------------
+    def get_last_traded_window(self, agent_id):
+        aid = str(agent_id)
+        if aid in self.portfolios:
+            return int(self.portfolios[aid].get("last_traded_window", -1))
+        return -1
+
+    def set_last_traded_window(self, agent_id, window_id):
+        aid = str(agent_id)
+        if aid in self.portfolios:
+            self.portfolios[aid]["last_traded_window"] = int(window_id)
+            self._save()
 
     # -------------------------
     # SAFE SAVE (FIXED)
