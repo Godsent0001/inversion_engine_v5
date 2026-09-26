@@ -45,7 +45,8 @@
     "pending_ticket": null
   },
   "464": {
-    "equity": 10000.0,
-    "cooldown": 0
+    "equity": 9387.139999999998,
+    "cooldown": 0,
+    "last_traded_window": 248646
   }
 }
