@@ -8,7 +8,7 @@ STARTING_BALANCE = 10000.0
 AGENT_ALLOCATION = 10000.0
 FETCH_BARS = 350
 ATR_PERIOD = 14
-FRIDAY_CLOSE_HOUR_GMT = 20  # Close trades 1 hr before Friday market close (20:00 GMT)
+FRIDAY_CLOSE_HOUR_GMT = 19  # Close trades before Friday market close (19:00 GMT, matching research engine)
 
 # MT5 Configuration
 MT5_LOGIN = 435643605
