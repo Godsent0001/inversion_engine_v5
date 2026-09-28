@@ -6,6 +6,7 @@ import torch
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from multiprocessing import Pool, cpu_count
 
 # Ensure project path in sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
@@ -13,12 +14,17 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 from inversion_engine_v5.research.core.feature_engine_fast import build_all_features_fast
 from inversion_engine_v5.research.core.gru_sim_engine import GRUClassifier, simulate_trading_numba
 
-def load_one_year_m1(data_path):
-    print("Step 1: Reading 1-year M1 index window via chunk stream...")
+# Global worker variables for shared memory in multiprocessing
+_global_monthly_slices = None
+_global_input_dim = None
+_global_num_months = None
+
+def load_year2_m1(data_path):
+    print("Step 1: Reading Year 2 M1 data (Oct 2025 – Sep 2026)...")
     chunks = []
     for chunk in pd.read_csv(data_path, chunksize=100000):
         time_str = chunk['time'].str[:10]
-        m = (time_str >= '2024-10-01') & (time_str <= '2025-09-30')
+        m = (time_str >= '2025-10-01') & (time_str <= '2026-09-30')
         if m.any():
             chunks.append(chunk[m])
 
@@ -29,13 +35,116 @@ def load_one_year_m1(data_path):
 
     return df_period.sort_values('time').reset_index(drop=True)
 
+def init_worker(monthly_slices, input_dim, num_months):
+    global _global_monthly_slices, _global_input_dim, _global_num_months
+    _global_monthly_slices = monthly_slices
+    _global_input_dim = input_dim
+    _global_num_months = num_months
+    torch.set_num_threads(1)
+
+def evaluate_one_model(task_args):
+    m_id, seed = task_args
+
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    model = GRUClassifier(input_dim=_global_input_dim, hidden_dim=64, num_classes=3)
+    model.eval()
+
+    disqualified = False
+    months_survived = 0
+
+    num_months = _global_num_months
+    monthly_pnls = np.zeros(num_months + 1, dtype=np.float64)
+    monthly_sharpes = np.zeros(num_months + 1, dtype=np.float64)
+    monthly_counts = np.zeros(num_months + 1, dtype=np.int32)
+    monthly_mdds = np.zeros(num_months + 1, dtype=np.float64)
+
+    seq_len = 30
+
+    with torch.inference_mode():
+        for m in range(1, num_months + 1):
+            if m not in _global_monthly_slices:
+                continue
+
+            ms = _global_monthly_slices[m]
+            X_m_seq = ms['X_m_seq']
+
+            probs = model(X_m_seq)
+            preds = torch.argmax(probs, dim=-1).numpy()
+
+            warmup_offset = ms['warmup_offset']
+            m_preds = preds[warmup_offset:] if warmup_offset > 0 else preds
+
+            m_disq, m_surv, m_pnls, m_sharpes, m_cnts, m_mdds = simulate_trading_numba(
+                m_preds,
+                ms['win_ids'],
+                ms['m_ids'],
+                ms['day_ids'],
+                ms['opens'],
+                ms['highs'],
+                ms['lows'],
+                ms['closes'],
+                ms['atrs'],
+                ms['spreads'],
+                num_days=ms['num_days']
+            )
+
+            pnl_m = m_pnls[m]
+            sharpe_m = m_sharpes[m]
+            cnt_m = m_cnts[m]
+            mdd_m = m_mdds[m]
+
+            monthly_pnls[m] = pnl_m
+            monthly_sharpes[m] = sharpe_m
+            monthly_counts[m] = cnt_m
+            monthly_mdds[m] = mdd_m
+
+            # Strict Early Termination on Negative Monthly Return
+            if pnl_m < 0.0 or m_disq:
+                disqualified = True
+                break
+
+            months_survived += 1
+
+    total_pnl = np.sum(monthly_pnls[1:months_survived + 1]) if months_survived > 0 else monthly_pnls[1]
+    total_trades = np.sum(monthly_counts[1:months_survived + 1])
+
+    if not disqualified and months_survived == num_months:
+        valid_sharpes = monthly_sharpes[1:num_months + 1]
+        avg_monthly_sharpe = float(np.mean(valid_sharpes))
+        rank_score = total_pnl * 100.0  # Rank by Total Net PnL (%)
+    else:
+        avg_monthly_sharpe = float(np.mean(monthly_sharpes[1:months_survived + 1])) if months_survived > 0 else -10.0
+        rank_score = -1000.0 + (months_survived * 10.0) + (total_pnl * 100.0)
+
+    res = {
+        'model_id': m_id,
+        'seed': seed,
+        'months_survived': months_survived,
+        'disqualified': disqualified,
+        'total_trades': int(total_trades),
+        'total_pnl': float(total_pnl),
+        'avg_monthly_sharpe': float(avg_monthly_sharpe),
+        'rank_score': float(rank_score)
+    }
+
+    for m in range(1, num_months + 1):
+        res[f'pnl_m{m}'] = float(monthly_pnls[m])
+        res[f'pnl_pct_m{m}'] = float(monthly_pnls[m] * 100.0)
+        res[f'mdd_pct_m{m}'] = float(monthly_mdds[m])
+        res[f'sharpe_m{m}'] = float(monthly_sharpes[m])
+        res[f'trades_m{m}'] = int(monthly_counts[m])
+
+    return res
+
 def run_simulation():
     data_path = 'inversion_engine_v5/research/data/raw/markets/XAUUSD/XAUUSD_M1.csv'
     markets_dir = 'inversion_engine_v5/research/data/raw/markets'
     output_dir = 'inversion_engine_v5/outputs'
     os.makedirs(output_dir, exist_ok=True)
 
-    df_period = load_one_year_m1(data_path)
+    df_period = load_year2_m1(data_path)
     print(f"Data period: {df_period['time'].min()} to {df_period['time'].max()}, Total bars: {len(df_period)}")
 
     print("Step 2: Building ultra-fast vectorized feature matrix...")
@@ -69,11 +178,11 @@ def run_simulation():
     del cleaned_df, df_period
     gc.collect()
 
-    seq_len = 10
+    seq_len = 30
     num_models = 1000
     seeds = [1000 + i for i in range(num_models)]
 
-    print("Step 3: Preparing monthly slice indices...")
+    print("Step 3: Preparing monthly slice indices and pre-unfolding sequence tensors...")
     monthly_slices = {}
     num_months = len(unique_ym)
 
@@ -91,9 +200,11 @@ def run_simulation():
         _, day_indices = np.unique(m_day_ids, return_inverse=True)
         num_days = int(len(np.unique(m_day_ids)))
 
+        X_m = X_tensor[start_idx:end_idx]
+        X_m_seq = X_m.unfold(0, seq_len, 1).transpose(1, 2)
+
         monthly_slices[m] = {
-            'start_idx': start_idx,
-            'end_idx': end_idx,
+            'X_m_seq': X_m_seq,
             'warmup_offset': warmup_offset,
             'm_indices': m_indices,
             'win_ids': window_ids[m_indices],
@@ -108,103 +219,14 @@ def run_simulation():
             'spreads': spreads[m_indices]
         }
 
-    print(f"Step 4: Running simulation sequentially for {num_models} GRU models...")
-    torch.set_num_threads(4)
+    n_workers = min(4, cpu_count())
+    print(f"Step 4: Running parallel simulation with {n_workers} multiprocessing workers for {num_models} GRU models...")
 
-    results = []
+    tasks = [(i, seeds[i]) for i in range(num_models)]
 
     t0 = time.time()
-    for i in tqdm(range(num_models)):
-        m_id = i
-        seed = seeds[i]
-
-        torch.manual_seed(seed)
-        np.random.seed(seed)
-
-        model = GRUClassifier(input_dim=input_dim, hidden_dim=64, num_classes=3)
-        model.eval()
-
-        disqualified = False
-        months_survived = 0
-
-        monthly_pnls = np.zeros(num_months + 1, dtype=np.float64)
-        monthly_sharpes = np.zeros(num_months + 1, dtype=np.float64)
-        monthly_counts = np.zeros(num_months + 1, dtype=np.int32)
-
-        with torch.no_grad():
-            for m in range(1, num_months + 1):
-                if m not in monthly_slices:
-                    continue
-
-                ms = monthly_slices[m]
-                X_m = X_tensor[ms['start_idx']:ms['end_idx']]
-                X_m_seq = X_m.unfold(0, seq_len, 1).transpose(1, 2)
-
-                probs = model(X_m_seq)
-                preds = torch.argmax(probs, dim=-1).numpy()
-
-                warmup_offset = ms['warmup_offset']
-                m_preds = preds[warmup_offset:] if warmup_offset > 0 else preds
-
-                m_disq, m_surv, m_pnls, m_sharpes, m_cnts = simulate_trading_numba(
-                    m_preds,
-                    ms['win_ids'],
-                    ms['m_ids'],
-                    ms['day_ids'],
-                    ms['opens'],
-                    ms['highs'],
-                    ms['lows'],
-                    ms['closes'],
-                    ms['atrs'],
-                    ms['spreads'],
-                    num_days=ms['num_days']
-                )
-
-                pnl_m = m_pnls[m]
-                sharpe_m = m_sharpes[m]
-                cnt_m = m_cnts[m]
-
-                monthly_pnls[m] = pnl_m
-                monthly_sharpes[m] = sharpe_m
-                monthly_counts[m] = cnt_m
-
-                if pnl_m < 0.0 or m_disq:
-                    disqualified = True
-                    break
-
-                months_survived += 1
-
-        total_pnl = np.sum(monthly_pnls[1:months_survived + 1]) if months_survived > 0 else monthly_pnls[1]
-        total_trades = np.sum(monthly_counts[1:months_survived + 1])
-
-        if not disqualified and months_survived == num_months:
-            valid_sharpes = monthly_sharpes[1:num_months + 1]
-            avg_monthly_sharpe = float(np.mean(valid_sharpes))
-            rank_score = avg_monthly_sharpe
-        else:
-            avg_monthly_sharpe = float(np.mean(monthly_sharpes[1:months_survived + 1])) if months_survived > 0 else -10.0
-            rank_score = -100.0 + months_survived + (avg_monthly_sharpe * 0.01)
-
-        res = {
-            'model_id': m_id,
-            'seed': seed,
-            'months_survived': months_survived,
-            'disqualified': disqualified,
-            'total_trades': int(total_trades),
-            'total_pnl': float(total_pnl),
-            'avg_monthly_sharpe': float(avg_monthly_sharpe),
-            'rank_score': float(rank_score)
-        }
-
-        for m in range(1, num_months + 1):
-            res[f'pnl_m{m}'] = float(monthly_pnls[m])
-            res[f'sharpe_m{m}'] = float(monthly_sharpes[m])
-            res[f'trades_m{m}'] = int(monthly_counts[m])
-
-        results.append(res)
-
-        if (i + 1) % 100 == 0:
-            gc.collect()
+    with Pool(processes=n_workers, initializer=init_worker, initargs=(monthly_slices, input_dim, num_months)) as pool:
+        results = list(tqdm(pool.imap(evaluate_one_model, tasks, chunksize=10), total=num_models))
 
     t1 = time.time()
     print(f"\nSimulation completed in {t1-t0:.2f} seconds ({num_models} models evaluated)!")
@@ -229,9 +251,9 @@ def run_simulation():
         survived = r['months_survived']
         score = r['rank_score']
         trades = r['total_trades']
-        pnl = r['total_pnl']
+        pnl_pct = r['total_pnl'] * 100.0
 
-        print(f"Rank {rank_idx+1}: Model ID {m_id} | Seed {seed} | Survived: {survived}/{num_months} months | Score: {score:.4f} | Trades: {trades} | PnL: {pnl:.4f}")
+        print(f"Rank {rank_idx+1}: Model ID {m_id} | Seed {seed} | Survived: {survived}/{num_months} months | Score (PnL %): {score:.2f}% | Trades: {trades}")
 
         # Instantiate and save PyTorch state_dict & config
         torch.manual_seed(seed)

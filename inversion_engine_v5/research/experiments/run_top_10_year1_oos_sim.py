@@ -5,7 +5,6 @@ import gc
 import torch
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
 
 # Ensure project path in sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
@@ -13,34 +12,34 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 from inversion_engine_v5.research.core.feature_engine_fast import build_all_features_fast
 from inversion_engine_v5.research.core.gru_sim_engine import GRUClassifier, simulate_trading_numba
 
-def load_year2_m1(data_path):
-    print("Step 1: Reading Year 2 M1 data (Oct 2025 – Sep 2026)...")
+def load_year1_m1(data_path):
+    print("Step 1: Reading Year 1 Out-Of-Sample M1 data (Oct 2024 – Sep 2025)...")
     chunks = []
     for chunk in pd.read_csv(data_path, chunksize=100000):
         time_str = chunk['time'].str[:10]
-        m = (time_str >= '2025-10-01') & (time_str <= '2026-09-30')
+        m = (time_str >= '2024-10-01') & (time_str <= '2025-09-30')
         if m.any():
             chunks.append(chunk[m])
 
-    df_y2 = pd.concat(chunks, ignore_index=True)
-    df_y2['time'] = pd.to_datetime(df_y2['time'])
+    df_y1 = pd.concat(chunks, ignore_index=True)
+    df_y1['time'] = pd.to_datetime(df_y1['time'])
     del chunks
     gc.collect()
 
-    return df_y2.sort_values('time').reset_index(drop=True)
+    return df_y1.sort_values('time').reset_index(drop=True)
 
-def run_year2_evaluation():
+def run_year1_oos_evaluation():
     data_path = 'inversion_engine_v5/research/data/raw/markets/XAUUSD/XAUUSD_M1.csv'
     markets_dir = 'inversion_engine_v5/research/data/raw/markets'
     output_dir = 'inversion_engine_v5/outputs'
     top_dir = os.path.join(output_dir, 'top_10_gru_models')
 
-    df_y2 = load_year2_m1(data_path)
-    print(f"Year 2 period: {df_y2['time'].min()} to {df_y2['time'].max()}, Total bars: {len(df_y2)}")
+    df_y1 = load_year1_m1(data_path)
+    print(f"Year 1 OOS period: {df_y1['time'].min()} to {df_y1['time'].max()}, Total bars: {len(df_y1)}")
 
-    print("Step 2: Building ultra-fast vectorized feature matrix for Year 2...")
+    print("Step 2: Building vectorized feature matrix for Year 1 OOS...")
     t0 = time.time()
-    X_np, cleaned_df = build_all_features_fast(df_y2, markets_dir=markets_dir)
+    X_np, cleaned_df = build_all_features_fast(df_y1, markets_dir=markets_dir)
     t1 = time.time()
     print(f"Features built in {t1-t0:.2f}s, Matrix shape: {X_np.shape}, Memory: {X_np.nbytes / (1024*1024):.2f}MB")
 
@@ -66,13 +65,13 @@ def run_year2_evaluation():
     atrs = cleaned_df['high'].sub(cleaned_df['low']).rolling(14).mean().ffill().bfill().values.astype(np.float64)
     spreads = cleaned_df['spread'].values.astype(np.float64) if 'spread' in cleaned_df.columns else np.zeros(len(cleaned_df))
 
-    del cleaned_df, df_y2
+    del cleaned_df, df_y1
     gc.collect()
 
-    seq_len = 10
+    seq_len = 30
     num_months = len(unique_ym)
 
-    print("Step 3: Preparing monthly slice indices...")
+    print("Step 3: Preparing monthly slice indices and pre-unfolding sequence tensors...")
     monthly_slices = {}
     for m in range(1, num_months + 1):
         m_mask = (month_ids == m)
@@ -105,10 +104,10 @@ def run_year2_evaluation():
             'spreads': spreads[m_indices]
         }
 
-    print("\nStep 4: Evaluating Top 10 Models on Year 2 Data...")
+    print("\nStep 4: Evaluating Top 10 Models on Year 1 OOS Data...")
     pt_files = sorted([f for f in os.listdir(top_dir) if f.endswith('.pt')])
 
-    results_y2 = []
+    results_y1 = []
     torch.set_num_threads(4)
 
     for pt_file in pt_files:
@@ -118,8 +117,8 @@ def run_year2_evaluation():
         rank = ckpt['rank']
         m_id = ckpt['model_id']
         seed = ckpt['seed']
-        y1_metrics = ckpt['metrics']
-        y1_score = y1_metrics['rank_score']
+        y2_metrics = ckpt['metrics']
+        y2_pnl = y2_metrics['total_pnl'] * 100.0
 
         # Instantiate model and load state_dict
         model = GRUClassifier(input_dim=input_dim, hidden_dim=64, num_classes=3)
@@ -132,8 +131,9 @@ def run_year2_evaluation():
         monthly_pnls = np.zeros(num_months + 1, dtype=np.float64)
         monthly_sharpes = np.zeros(num_months + 1, dtype=np.float64)
         monthly_counts = np.zeros(num_months + 1, dtype=np.int32)
+        monthly_mdds = np.zeros(num_months + 1, dtype=np.float64)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             for m in range(1, num_months + 1):
                 if m not in monthly_slices:
                     continue
@@ -144,6 +144,7 @@ def run_year2_evaluation():
 
                 probs = model(X_m_seq)
                 preds = torch.argmax(probs, dim=-1).numpy()
+                del X_m, X_m_seq, probs
 
                 warmup_offset = ms['warmup_offset']
                 m_preds = preds[warmup_offset:] if warmup_offset > 0 else preds
@@ -170,50 +171,43 @@ def run_year2_evaluation():
                 monthly_pnls[m] = pnl_m
                 monthly_sharpes[m] = sharpe_m
                 monthly_counts[m] = cnt_m
+                monthly_mdds[m] = mdd_m
 
                 if pnl_m < 0.0 or m_disq:
                     disqualified = True
-                    break
 
                 months_survived += 1
 
-        total_pnl = np.sum(monthly_pnls[1:months_survived + 1]) if months_survived > 0 else monthly_pnls[1]
-        total_trades = np.sum(monthly_counts[1:months_survived + 1])
-
-        if not disqualified and months_survived == num_months:
-            valid_sharpes = monthly_sharpes[1:num_months + 1]
-            avg_monthly_sharpe = float(np.mean(valid_sharpes))
-        else:
-            avg_monthly_sharpe = float(np.mean(monthly_sharpes[1:months_survived + 1])) if months_survived > 0 else -10.0
+        total_pnl = np.sum(monthly_pnls[1:13])
+        total_trades = np.sum(monthly_counts[1:13])
 
         res = {
-            'y1_rank': rank,
+            'y2_rank': rank,
             'model_id': m_id,
             'seed': seed,
-            'y1_score': y1_score,
-            'y2_months_survived': months_survived,
-            'y2_disqualified': disqualified,
-            'y2_total_trades': int(total_trades),
-            'y2_total_pnl': float(total_pnl),
-            'y2_avg_monthly_sharpe': float(avg_monthly_sharpe)
+            'y2_is_pnl_pct': y2_pnl,
+            'y1_oos_months_survived': months_survived,
+            'y1_oos_disqualified': disqualified,
+            'y1_oos_total_trades': int(total_trades),
+            'y1_oos_total_pnl_pct': float(total_pnl * 100.0)
         }
 
         for m in range(1, num_months + 1):
-            res[f'y2_pnl_m{m}'] = float(monthly_pnls[m])
-            res[f'y2_pnl_pct_m{m}'] = float(monthly_pnls[m] * 100.0)
-            res[f'y2_sharpe_m{m}'] = float(monthly_sharpes[m])
-            res[f'y2_trades_m{m}'] = int(monthly_counts[m])
+            res[f'y1_pnl_m{m}'] = float(monthly_pnls[m])
+            res[f'y1_pnl_pct_m{m}'] = float(monthly_pnls[m] * 100.0)
+            res[f'y1_mdd_pct_m{m}'] = float(monthly_mdds[m])
+            res[f'y1_sharpe_m{m}'] = float(monthly_sharpes[m])
+            res[f'y1_trades_m{m}'] = int(monthly_counts[m])
 
-        results_y2.append(res)
-        print(f"Rank {rank} (Model {m_id}): Y2 Survived = {months_survived}/{num_months} | Y2 PnL = {total_pnl:.4f} | Y2 Avg Sharpe = {avg_monthly_sharpe:.4f} | Y2 Trades = {total_trades}")
+        results_y1.append(res)
+        print(f"Rank {rank} (Model {m_id}): Y2 IS PnL = {y2_pnl:.2f}% | Y1 OOS PnL = {total_pnl*100:.2f}% | Y1 Disqualified = {disqualified} | Y1 Trades = {total_trades}")
 
-    # Sort results by y1_rank ascending
-    results_y2.sort(key=lambda r: r['y1_rank'])
+    results_y1.sort(key=lambda r: r['y2_rank'])
 
-    df_y2_res = pd.DataFrame(results_y2)
-    csv_y2_path = os.path.join(output_dir, 'top_10_models_year2_metrics.csv')
-    df_y2_res.to_csv(csv_y2_path, index=False)
-    print(f"\nSaved Year 2 out-of-sample metrics for top 10 models to {csv_y2_path}")
+    df_y1_res = pd.DataFrame(results_y1)
+    csv_y1_path = os.path.join(output_dir, 'top_10_models_year1_oos_metrics.csv')
+    df_y1_res.to_csv(csv_y1_path, index=False)
+    print(f"\nSaved Year 1 out-of-sample metrics for top 10 models to {csv_y1_path}")
 
 if __name__ == '__main__':
-    run_year2_evaluation()
+    run_year1_oos_evaluation()
