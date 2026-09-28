@@ -1,0 +1,25 @@
+Step 1: Reading Year 1 Out-Of-Sample M1 data (Oct 2024 – Sep 2025)...
+Year 1 OOS period: 2024-10-01 00:00:00+00:00 to 2025-09-30 23:59:00+00:00, Total bars: 352940
+Step 2: Building vectorized feature matrix for Year 1 OOS...
+Features built in 15.82s, Matrix shape: (352940, 328), Memory: 441.61MB
+Step 3: Preparing monthly slice indices and pre-unfolding sequence tensors...
+
+Step 4: Evaluating Top 10 Models on Year 1 OOS Data...
+Rank 1 (Model 464): Y2 IS PnL = 2138.85% | Y1 OOS PnL = 862.85% | Y1 Disqualified = True | Y1 Trades = 2908
+Rank 2 (Model 283): Y2 IS PnL = 1425.85% | Y1 OOS PnL = 1874.85% | Y1 Disqualified = False | Y1 Trades = 2895
+Rank 3 (Model 426): Y2 IS PnL = 1402.85% | Y1 OOS PnL = 939.84% | Y1 Disqualified = False | Y1 Trades = 2963
+Rank 4 (Model 249): Y2 IS PnL = 1399.84% | Y1 OOS PnL = 5.84% | Y1 Disqualified = True | Y1 Trades = 3048
+Rank 5 (Model 764): Y2 IS PnL = 1390.84% | Y1 OOS PnL = 1405.84% | Y1 Disqualified = False | Y1 Trades = 2929
+Rank 6 (Model 66): Y2 IS PnL = 1326.85% | Y1 OOS PnL = 892.84% | Y1 Disqualified = False | Y1 Trades = 2995
+Rank 7 (Model 413): Y2 IS PnL = 1326.85% | Y1 OOS PnL = 1627.86% | Y1 Disqualified = False | Y1 Trades = 2590
+Rank 8 (Model 986): Y2 IS PnL = 1314.85% | Y1 OOS PnL = 728.86% | Y1 Disqualified = False | Y1 Trades = 2664
+Rank 9 (Model 58): Y2 IS PnL = 1351.84% | Y1 OOS PnL = 962.84% | Y1 Disqualified = False | Y1 Trades = 2985
+Rank 10 (Model 125): Y2 IS PnL = 1055.84% | Y1 OOS PnL = 1393.84% | Y1 Disqualified = False | Y1 Trades = 3022
+Rank 10 (Model 271): Y2 IS PnL = 1276.85% | Y1 OOS PnL = 323.84% | Y1 Disqualified = True | Y1 Trades = 3030
+Rank 1 (Model 464): Y2 IS PnL = 1878.85% | Y1 OOS PnL = 862.85% | Y1 Disqualified = True | Y1 Trades = 2908
+Rank 2 (Model 783): Y2 IS PnL = 1484.87% | Y1 OOS PnL = 1020.87% | Y1 Disqualified = False | Y1 Trades = 2522
+Rank 3 (Model 413): Y2 IS PnL = 1412.86% | Y1 OOS PnL = 1627.86% | Y1 Disqualified = False | Y1 Trades = 2590
+Rank 4 (Model 764): Y2 IS PnL = 1519.85% | Y1 OOS PnL = 1405.84% | Y1 Disqualified = False | Y1 Trades = 2929
+Rank 5 (Model 46): Y2 IS PnL = 1472.84% | Y1 OOS PnL = 1401.84% | Y1 Disqualified = False | Y1 Trades = 3026
+Rank 6 (Model 8): Y2 IS PnL = 1472.84% | Y1 OOS PnL = 1292.84% | Y1 Disqualified = False | Y1 Trades = 3060
+Rank 7 (Model 58): Y2 IS PnL = 1355.84% | Y1 OOS PnL = 962.84% | Y1 Disqualified = False | Y1 Trades = 2985

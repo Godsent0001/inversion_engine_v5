@@ -46,10 +46,16 @@ def simulate_trading_numba(
     """
     N = len(predictions)
 
-    # Track monthly returns and trade counts
+    # Track monthly returns, trade counts, and max drawdown (%)
     monthly_pnls = np.zeros(13, dtype=np.float64)       # index 1..12
     monthly_sharpes = np.zeros(13, dtype=np.float64)    # index 1..12
     monthly_trade_counts = np.zeros(13, dtype=np.int32) # index 1..12
+    monthly_mdds = np.zeros(13, dtype=np.float64)        # index 1..12 (Max Drawdown in %)
+
+    # Running equity tracking within month for Max Drawdown
+    cum_equity = 1.0
+    peak_equity = 1.0
+    max_dd_month = 0.0
 
     # Daily PnL tracking for Sharpe calculation
     daily_pnls = np.zeros(35, dtype=np.float64)
@@ -86,6 +92,7 @@ def simulate_trading_numba(
 
             monthly_pnls[current_month] = sum_pnl
             monthly_trade_counts[current_month] = month_trade_idx
+            monthly_mdds[current_month] = max_dd_month * 100.0  # Percentage
 
             if num_days > 1:
                 mean_d = sum_pnl / num_days
@@ -110,6 +117,9 @@ def simulate_trading_numba(
             current_month = m
             month_trade_idx = 0
             daily_pnls.fill(0.0)
+            cum_equity = 1.0
+            peak_equity = 1.0
+            max_dd_month = 0.0
 
         # Reset window lock on new 2H window
         win_id = window_ids[i]
@@ -190,11 +200,18 @@ def simulate_trading_numba(
                 spread_cost = (c_spread * 1e-5) / entry_p
                 net_pnl = pnl - spread_cost
 
-                # Accumulate into daily PnL
+                # Accumulate into daily PnL & update cumulative equity for Max Drawdown
                 d_idx = day_ids[i]
                 if d_idx >= 0 and d_idx < 35:
                     daily_pnls[d_idx] += net_pnl
                 month_trade_idx += 1
+
+                cum_equity += net_pnl
+                if cum_equity > peak_equity:
+                    peak_equity = cum_equity
+                dd = peak_equity - cum_equity
+                if dd > max_dd_month:
+                    max_dd_month = dd
 
                 # Remove trade by swapping with last active
                 num_active -= 1
@@ -221,6 +238,7 @@ def simulate_trading_numba(
             sum_pnl += daily_pnls[d]
         monthly_pnls[current_month] = sum_pnl
         monthly_trade_counts[current_month] = month_trade_idx
+        monthly_mdds[current_month] = max_dd_month * 100.0
 
         if num_days > 1:
             mean_d = sum_pnl / num_days
@@ -241,4 +259,4 @@ def simulate_trading_numba(
         else:
             months_survived += 1
 
-    return disqualified, months_survived, monthly_pnls, monthly_sharpes, monthly_trade_counts
+    return disqualified, months_survived, monthly_pnls, monthly_sharpes, monthly_trade_counts, monthly_mdds
