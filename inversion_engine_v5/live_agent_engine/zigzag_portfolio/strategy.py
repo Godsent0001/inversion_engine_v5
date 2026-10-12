@@ -165,8 +165,8 @@ def detect_confirmed_swings(
             leg_start_price=float(leg_start_price),
             event_index=event_index,
             event_timestamp=int(times[event_index]),
-            flip_index=event_index - backstep,
-            flip_timestamp=int(times[event_index - backstep]),
+            flip_index=event_index if repainting else event_index - backstep,
+            flip_timestamp=int(times[event_index if repainting else event_index - backstep]),
         ))
     return swings
 
