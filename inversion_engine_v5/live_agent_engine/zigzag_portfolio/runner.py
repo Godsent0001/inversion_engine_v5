@@ -90,12 +90,24 @@ class ZigZagPortfolioRunner:
         maximum = float(info.volume_max)
         if step <= 0 or minimum <= 0 or maximum < minimum:
             return 0.0
-        volume = math.floor(raw_volume / step) * step
+
+        # Always round UP to the next broker-valid volume so the chosen volume
+        # is never below the risk-derived target. If the target is below the
+        # broker minimum, use the minimum (even though this can exceed the
+        # configured cash-risk budget on a small account).
+        if raw_volume <= minimum:
+            volume = minimum
+        else:
+            steps = math.ceil((raw_volume - minimum) / step - 1e-12)
+            volume = minimum + steps * step
         volume = round(volume, 8)
-        # Never round up to the broker minimum: that would exceed the risk budget.
-        if volume < minimum:
-            return 0.0
-        volume = min(volume, maximum)
+        if volume > maximum:
+            log.warning(
+                "Risk-derived volume %.8f exceeds broker maximum %.8f for %s; "
+                "using maximum volume.",
+                raw_volume, maximum, symbol,
+            )
+            volume = maximum
         return volume
 
     def _pending_orders_for_side(self, symbol: str, side: str):
@@ -202,13 +214,36 @@ class ZigZagPortfolioRunner:
         if not settings.LIVE_TRADING_ENABLED:
             log.info("[DRY RUN] Pending order not sent.")
             return
-        result = mt5.order_send(request)
-        if result is None or result.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
-            log.error("Pending order rejected: %s", mt5.last_error() if result is None else result.comment)
-            return
-        log.info("Pending %s accepted: ticket=%s", signal.side, result.order)
-        if not result.order:
-            log.error("Accepted pending order returned no ticket; no older same-side order remains.")
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            result = mt5.order_send(request)
+            if result is not None and result.retcode in (
+                mt5.TRADE_RETCODE_DONE,
+                mt5.TRADE_RETCODE_PLACED,
+            ):
+                log.info(
+                    "Pending %s accepted on attempt %s/%s: ticket=%s",
+                    signal.side, attempt, max_attempts, result.order,
+                )
+                if not result.order:
+                    log.error("Accepted pending order returned no ticket; no older same-side order remains.")
+                return
+
+            reason = mt5.last_error() if result is None else (
+                f"retcode={result.retcode}, comment={result.comment}"
+            )
+            if attempt < max_attempts:
+                log.warning(
+                    "Pending %s rejected on attempt %s/%s for %s: %s; retrying in 1 second.",
+                    signal.side, attempt, max_attempts, symbol, reason,
+                )
+                time.sleep(1)
+            else:
+                log.error(
+                    "Pending %s rejected after %s attempts for %s: %s. "
+                    "The old same-side order was already removed.",
+                    signal.side, max_attempts, symbol, reason,
+                )
 
     def _close_gold_positions_opened_outside_window(self, times: list[int], now_timestamp: int) -> None:
         """Close a Gold position immediately if a pending order raced past session cleanup."""
