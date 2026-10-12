@@ -87,7 +87,7 @@ def signal_from_swing(swing: Swing, point: float, reward_risk: float = 3.0) -> P
     if distance <= 0:
         raise ValueError("Swing leg must have a non-zero length.")
     if swing.kind == "high":
-        entry = swing.price + point
+        entry = swing.price
         return PendingSignal("buy", entry, entry - distance, entry + distance * reward_risk, swing.timestamp)
-    entry = swing.price - point
+    entry = swing.price
     return PendingSignal("sell", entry, entry + distance, entry - distance * reward_risk, swing.timestamp)
