@@ -218,26 +218,12 @@ class ZigZagPortfolioRunner:
         )
         if not swings:
             return
-        # The detector returns swings from the entire fetched history. Only
-        # consider the newest event per swing kind; replaying every unseen
-        # historical event at startup can rapidly submit hundreds of stale
-        # orders and hit the broker's active-order limit.
-        latest_by_kind = {}
-        for swing in swings:
-            kind = swing.kind
-            event_timestamp = int(swing.event_timestamp or swing.timestamp)
-            previous = latest_by_kind.get(kind)
-            if previous is None or event_timestamp > int(
-                previous.event_timestamp or previous.timestamp
-            ):
-                latest_by_kind[kind] = swing
-
-        # Process every unseen event returned by the bar-by-bar state
-        # machine, in event-time order. The state machine runs on closed
-        # candles; live mode detects the event on its detection candle.
+        # Process unseen swing events in event-time order, as the strategy
+        # runs bar by bar. Persistent timestamps prevent replaying events
+        # already handled before a restart.
         last_swing = self.state.setdefault("last_swing", {})
         for swing in sorted(
-            latest_by_kind.values(),
+            swings,
             key=lambda item: int(item.event_timestamp or item.timestamp),
         ):
             event_timestamp = int(swing.event_timestamp or swing.timestamp)
