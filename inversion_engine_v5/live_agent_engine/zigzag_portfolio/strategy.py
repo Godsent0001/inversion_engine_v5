@@ -77,6 +77,69 @@ def in_dynamic_gold_fill_window(
     now = datetime.fromtimestamp(int(current_timestamp), tz=timezone.utc)
     return now.hour < session_end_hour_utc
 
+def detect_weekend_reopen_timestamp(
+    times: Sequence[int],
+    gap_hours: int = 40,
+) -> int | None:
+    """Return the latest first bar after a weekend-sized market-data gap."""
+    if gap_hours <= 0:
+        raise ValueError("gap_hours must be positive.")
+    threshold = gap_hours * 3600
+    reopen: int | None = None
+    for previous, current in zip(times, times[1:]):
+        if int(current) - int(previous) >= threshold:
+            reopen = int(current)
+    return reopen
+
+
+def detect_weekend_close_bar_timestamp(
+    times: Sequence[int],
+    gap_hours: int = 40,
+) -> int | None:
+    """Return the last bar timestamp before the latest weekend-sized gap."""
+    if gap_hours <= 0:
+        raise ValueError("gap_hours must be positive.")
+    threshold = gap_hours * 3600
+    close_bar: int | None = None
+    for previous, current in zip(times, times[1:]):
+        if int(current) - int(previous) >= threshold:
+            close_bar = int(previous)
+    return close_bar
+
+
+def in_dynamic_weekly_exit_window(
+    times: Sequence[int],
+    current_timestamp: int,
+    exit_minutes_before_close: int = 30,
+    timeframe_minutes: int = 5,
+    gap_hours: int = 40,
+) -> bool:
+    """Infer next weekly close from the latest observed weekend gap.
+
+    MT5 bar times are candle-open times. The expected close is one timeframe
+    after the last pre-gap bar. The next exit window is inferred from that
+    observed weekly schedule and spans from N minutes before close until close.
+    """
+    if (
+        not times
+        or exit_minutes_before_close <= 0
+        or timeframe_minutes <= 0
+        or gap_hours <= 0
+    ):
+        return False
+    last_close_bar = detect_weekend_close_bar_timestamp(times, gap_hours)
+    if last_close_bar is None:
+        return False
+
+    expected_close = last_close_bar + timeframe_minutes * 60 + 7 * 24 * 3600
+    exit_start = expected_close - exit_minutes_before_close * 60
+    now = int(current_timestamp)
+    week_seconds = 7 * 24 * 3600
+    while expected_close <= now:
+        expected_close += week_seconds
+        exit_start += week_seconds
+    return exit_start <= now < expected_close
+
 def _lowest_idx(values: Sequence[float], depth: int, start: int) -> int:
     minimum, index = values[start], start
     for i in range(start - 1, max(start - depth, -1), -1):
