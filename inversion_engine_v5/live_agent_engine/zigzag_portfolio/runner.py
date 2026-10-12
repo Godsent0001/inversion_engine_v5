@@ -152,27 +152,27 @@ class ZigZagPortfolioRunner:
                 log.info("Removed %s pending order ticket=%s", pending_types[order.type], order.ticket)
         return success
 
-    def _place_signal(self, asset: str, symbol: str, signal, balance: float, reference: float) -> None:
+    def _place_signal(self, asset: str, symbol: str, signal, balance: float, reference: float) -> str:
         info = mt5.symbol_info(symbol)
         tick = mt5.symbol_info_tick(symbol)
         if info is None or tick is None or info.point <= 0:
             log.error("Missing symbol/tick metadata for %s", symbol)
-            return
+            return "retry"
         entry = round(signal.entry / info.point) * info.point
         stop = round(signal.stop_loss / info.point) * info.point
         target = round(signal.take_profit / info.point) * info.point
         if signal.side == "buy" and entry <= tick.ask:
             log.info("Buy-stop level is not above current ask for %s; skipping stale swing", symbol)
-            return
+            return "stale"
         if signal.side == "sell" and entry >= tick.bid:
             log.info("Sell-stop level is not below current bid for %s; skipping stale swing", symbol)
-            return
+            return "stale"
         risk_pct = settings.GOLD_RISK_PERCENT if asset == "gold" else settings.OIL_RISK_PERCENT
         risk_cash = reference * risk_pct
         volume = self._volume_for_risk(symbol, signal.side, entry, stop, risk_cash)
         if volume <= 0:
             log.warning("Volume is below broker minimum or risk calculation failed; skipping %s", symbol)
-            return
+            return "retry"
         order_type = mt5.ORDER_TYPE_BUY_STOP if signal.side == "buy" else mt5.ORDER_TYPE_SELL_STOP
 
         # Snapshot old same-side orders. The replacement is sent first; only
@@ -181,7 +181,23 @@ class ZigZagPortfolioRunner:
         old_orders = self._pending_orders_for_side(symbol, signal.side)
         if old_orders is None:
             log.error("Could not inspect existing %s orders; refusing replacement.", signal.side)
-            return
+            return "retry"
+
+        # Preserve the best existing entry. A BUY STOP may only be replaced by
+        # a strictly lower entry; a SELL STOP may only be replaced by a
+        # strictly higher entry. Open positions and the opposite side are not
+        # considered here, so they never block an independent pending setup.
+        if old_orders:
+            old_prices = [float(order.price_open) for order in old_orders]
+            best_existing = min(old_prices) if signal.side == "buy" else max(old_prices)
+            improves_existing = entry < best_existing if signal.side == "buy" else entry > best_existing
+            if not improves_existing:
+                log.info(
+                    "Keeping better existing %s pending order for %s: existing_entry=%.*f, "
+                    "new_entry=%.*f; new setup not submitted.",
+                    signal.side, symbol, info.digits, best_existing, info.digits, entry,
+                )
+                return "superseded"
 
         request = {
             "action": mt5.TRADE_ACTION_PENDING,
@@ -201,7 +217,7 @@ class ZigZagPortfolioRunner:
         account = mt5.account_info()
         if margin is None or account is None or margin > float(account.margin_free):
             log.warning("Insufficient/unknown free margin for %s; skipping order", symbol)
-            return
+            return "retry"
         log.info(
             "%s %s | balance=%.2f active_reference=%.2f risk_cash=%.2f volume=%.4f entry=%.*f SL=%.*f TP=%.*f",
             asset, signal.side, balance, reference, risk_cash, volume,
@@ -209,7 +225,7 @@ class ZigZagPortfolioRunner:
         )
         if not settings.LIVE_TRADING_ENABLED:
             log.info("[DRY RUN] Pending order not sent.")
-            return
+            return "dry_run"
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             result = mt5.order_send(request)
@@ -240,7 +256,7 @@ class ZigZagPortfolioRunner:
                         )
                 if not new_ticket:
                     log.error("Accepted pending order returned no ticket; verify broker order list.")
-                return
+                return "accepted"
 
             reason = mt5.last_error() if result is None else (
                 f"retcode={result.retcode}, comment={result.comment}"
@@ -257,6 +273,7 @@ class ZigZagPortfolioRunner:
                     "The existing same-side order was retained.",
                     signal.side, max_attempts, symbol, reason,
                 )
+        return "retry"
 
     def _close_gold_positions_opened_outside_window(self, times: list[int], now_timestamp: int) -> None:
         """Close a Gold position immediately if a pending order raced past session cleanup."""
@@ -336,6 +353,21 @@ class ZigZagPortfolioRunner:
         """Replace only the same-side shadow order, preserving the opposite side."""
         book = self._shadow_for(asset)
         previous = book.get(signal.side)
+        # Compare unsubmitted shadows only. Submitted shadows are checked against
+        # actual broker orders in _place_signal; consumed shadows are fresh history.
+        if previous and not previous.get("submitted") and not previous.get("consumed"):
+            previous_entry = float(previous.get("entry", signal.entry))
+            improves_shadow = (
+                float(signal.entry) < previous_entry
+                if signal.side == "buy"
+                else float(signal.entry) > previous_entry
+            )
+            if not improves_shadow:
+                log.info(
+                    "Keeping better shadow %s setup for %s: existing_entry=%.8f, new_entry=%.8f.",
+                    signal.side, symbol, previous_entry, float(signal.entry),
+                )
+                return
         if previous and previous.get("submitted") and asset == "gold" and not gold_fill_allowed:
             # Outside the permitted Gold session, the superseded broker order
             # must not remain executable while its replacement waits in shadow.
@@ -424,14 +456,16 @@ class ZigZagPortfolioRunner:
                 take_profit=float(order["take_profit"]),
                 swing_timestamp=created,
             )
-            self._place_signal(asset, symbol, signal, balance, reference)
-            broker_orders = self._pending_orders_for_side(symbol, side) if settings.LIVE_TRADING_ENABLED else []
-            # In dry-run mode, retain the shadow order for inspection and replay.
-            if not settings.LIVE_TRADING_ENABLED:
-                continue
-            if broker_orders:
+            placement_status = self._place_signal(asset, symbol, signal, balance, reference)
+            # Mark submitted only when MT5 accepted this specific submission;
+            # an older same-side pending order is not proof of acceptance.
+            if placement_status == "accepted":
                 order["submitted"] = True
                 changed = True
+            elif placement_status in ("superseded", "stale"):
+                order["consumed"] = True
+                changed = True
+            # In dry-run mode, retain the shadow order for inspection and replay.
         if changed:
             self._save_state()
 
@@ -469,6 +503,11 @@ class ZigZagPortfolioRunner:
             if int(last_swing.get(key, 0)) >= event_timestamp:
                 continue
             signal = signal_from_swing(swing, float(info.point), settings.REWARD_RISK)
+            log.info(
+                "Confirmed %s swing for %s: side=%s entry=%.8f event_age=%.1fs",
+                swing.kind, symbol, signal.side, float(signal.entry),
+                max(0.0, datetime.now(timezone.utc).timestamp() - event_timestamp),
+            )
             self._store_shadow_signal(asset, symbol, signal, gold_fill_allowed)
             last_swing[key] = event_timestamp
             self._save_state()
