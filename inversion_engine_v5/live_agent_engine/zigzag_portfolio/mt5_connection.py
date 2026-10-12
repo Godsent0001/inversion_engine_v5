@@ -28,11 +28,17 @@ class ZigZagMT5Connection:
             os.getenv("ZIGZAG_MT5_TERMINAL_PATH")
             or getattr(account_settings, "MT5_TERMINAL_PATH", None)
         )
-        kwargs = {
-            "login": int(account_settings.MT5_LOGIN),
-            "password": str(account_settings.MT5_PASSWORD),
-            "server": str(account_settings.MT5_SERVER),
-        }
+        try:
+            login = int(account_settings.MT5_LOGIN)
+            password = str(account_settings.MT5_PASSWORD)
+            server = str(account_settings.MT5_SERVER).strip()
+        except (TypeError, ValueError):
+            print("MT5 credentials are missing or invalid; check live_agent_engine/.env.")
+            return False
+        if login <= 0 or not password or not server:
+            print("MT5 credentials are missing; set MT5_LOGIN, MT5_PASSWORD, and MT5_SERVER in live_agent_engine/.env.")
+            return False
+        kwargs = {"login": login, "password": password, "server": server}
         try:
             initialized = (
                 mt5.initialize(terminal_path, **kwargs)
