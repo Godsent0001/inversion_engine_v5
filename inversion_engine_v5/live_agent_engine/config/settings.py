@@ -32,6 +32,7 @@ FRIDAY_CLOSE_HOUR_GMT = 19  # Close trades before Friday market close (19:00 GMT
 MT5_LOGIN = int(os.getenv("MT5_LOGIN", "0"))
 MT5_PASSWORD = os.getenv("MT5_PASSWORD", "")
 MT5_SERVER = os.getenv("MT5_SERVER", "")
+MT5_TERMINAL_PATH = os.getenv("MT5_TERMINAL_PATH", "")
 SLIPPAGE = 1000  # Large slippage tolerance to accept all market orders without spread/slippage filter rejection
 MAGIC_BASE = 1000
 
