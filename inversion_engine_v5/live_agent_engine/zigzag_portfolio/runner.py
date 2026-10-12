@@ -335,6 +335,15 @@ class ZigZagPortfolioRunner:
             else:
                 log.warning("Closed Gold position %s opened outside the allowed fill window.", position.ticket)
 
+    @staticmethod
+    def _shadow_status(order) -> str:
+        if not order:
+            return "none"
+        return (
+            f"side={order.get('side')} entry={order.get('entry')} "
+            f"submitted={order.get('submitted', False)} consumed={order.get('consumed', False)}"
+        )
+
     def _shadow_for(self, asset: str) -> dict:
         book = self.state.setdefault("shadow_book", {})
         return book.setdefault(asset, {"buy": None, "sell": None})
@@ -529,9 +538,16 @@ class ZigZagPortfolioRunner:
 
     def _process_symbol(self, asset: str, symbol: str, balance: float, reference: float) -> None:
         rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, settings.FETCH_BARS)
-        if rates is None or len(rates) < settings.DEPTH + settings.BACKSTEP + 5:
-            log.warning("Insufficient M5 bars for %s", symbol)
+        if rates is None:
+            log.error("M5 history request failed for %s: %s", symbol, mt5.last_error())
             return
+        if len(rates) < settings.DEPTH + settings.BACKSTEP + 5:
+            log.warning(
+                "Insufficient M5 bars for %s: received=%s required_at_least=%s last_error=%s",
+                symbol, len(rates), settings.DEPTH + settings.BACKSTEP + 5, mt5.last_error(),
+            )
+            return
+        log.info("DEBUG cycle: %s/%s fetched %s M5 bars.", asset, symbol, len(rates))
         # Drop the forming candle; process every completed bar in order.
         closed = rates[:-1]
         highs = [float(row["high"]) for row in closed]
@@ -543,6 +559,20 @@ class ZigZagPortfolioRunner:
         swings = detect_confirmed_swings(
             highs, lows, times, settings.DEPTH, settings.DEVIATION_POINTS,
             float(info.point), settings.BACKSTEP, repainting=True,
+        )
+        last_swing_state = self.state.setdefault("last_swing", {})
+        unseen_swings = [
+            swing for swing in swings
+            if int(last_swing_state.get(f"{asset}:{swing.kind}", 0))
+            < int(swing.event_timestamp or swing.timestamp)
+        ]
+        shadow_book = self._shadow_for(asset)
+        log.info(
+            "DEBUG cycle: %s/%s closed_bars=%s detected_swings=%s unseen_swings=%s "
+            "shadow_buy=%s shadow_sell=%s",
+            asset, symbol, len(closed), len(swings), len(unseen_swings),
+            self._shadow_status(shadow_book.get("buy")),
+            self._shadow_status(shadow_book.get("sell")),
         )
         now_timestamp = int(datetime.now(timezone.utc).timestamp())
         gold_fill_allowed = True
@@ -634,15 +664,22 @@ class ZigZagPortfolioRunner:
         return True
 
     def run_once(self) -> None:
+        log.info("DEBUG cycle: polling MT5 for new ZigZag setups.")
         if not self.connector.ensure_connection():
+            log.error("DEBUG cycle: MT5 connection is unavailable; skipping this cycle.")
             return
         account = mt5.account_info()
         if account is None or float(account.balance) <= 0:
             log.error("Live MT5 balance unavailable; refusing all entry processing.")
             return
         if not self.symbols and not self._resolve_symbols():
+            log.error("DEBUG cycle: symbol resolution failed; skipping this cycle.")
             return
         balance = float(account.balance)
+        log.info(
+            "DEBUG cycle: balance=%.2f active_symbols=%s",
+            balance, self.symbols,
+        )
         try:
             risk_state = self.risk_reference.update(balance)
         except Exception:
