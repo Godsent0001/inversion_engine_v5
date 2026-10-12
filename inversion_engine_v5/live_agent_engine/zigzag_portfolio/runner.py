@@ -155,32 +155,14 @@ class ZigZagPortfolioRunner:
             return
         order_type = mt5.ORDER_TYPE_BUY_STOP if signal.side == "buy" else mt5.ORDER_TYPE_SELL_STOP
 
-        # Keep at most one strategy-owned pending order per symbol and side.
-        # A new BUY replaces an existing BUY only at a lower entry; a new SELL
-        # replaces an existing SELL only at a higher entry. The opposite side
-        # and all open positions are left untouched.
+        # Every new qualifying swing signal supersedes the existing pending
+        # order on that same side, regardless of whether its entry is higher
+        # or lower. The opposite-side pending order and all open positions
+        # must remain untouched. The old same-side order is removed only
+        # after MT5 accepts the replacement below.
         existing = self._pending_orders_for_side(symbol, signal.side)
         if existing is None:
             return
-        if existing:
-            best_existing_entry = (
-                min(float(order.price_open) for order in existing)
-                if signal.side == "buy"
-                else max(float(order.price_open) for order in existing)
-            )
-            improves_entry = (
-                entry < best_existing_entry
-                if signal.side == "buy"
-                else entry > best_existing_entry
-            )
-            if not improves_entry:
-                log.info(
-                    "Keeping existing %s pending order(s) for %s: new entry %.*f "
-                    "does not improve existing entry %.*f",
-                    signal.side, symbol, info.digits, entry,
-                    info.digits, best_existing_entry,
-                )
-                return
 
         request = {
             "action": mt5.TRADE_ACTION_PENDING,
