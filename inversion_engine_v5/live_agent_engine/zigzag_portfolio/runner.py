@@ -91,24 +91,19 @@ class ZigZagPortfolioRunner:
         if step <= 0 or minimum <= 0 or maximum < minimum:
             return 0.0
 
-        # Always round UP to the next broker-valid volume so the chosen volume
-        # is never below the risk-derived target. If the target is below the
-        # broker minimum, use the minimum (even though this can exceed the
-        # configured cash-risk budget on a small account).
-        if raw_volume <= minimum:
-            volume = minimum
-        else:
-            steps = math.ceil((raw_volume - minimum) / step - 1e-12)
-            volume = minimum + steps * step
+        # Round DOWN to the nearest broker-valid volume to avoid exceeding
+        # the configured cash-risk budget. If that volume is below the broker
+        # minimum, skip the trade rather than forcing a larger risky volume.
+        volume = math.floor(raw_volume / step + 1e-12) * step
         volume = round(volume, 8)
-        if volume > maximum:
+        if volume < minimum:
             log.warning(
-                "Risk-derived volume %.8f exceeds broker maximum %.8f for %s; "
-                "using maximum volume.",
-                raw_volume, maximum, symbol,
+                "Risk-derived volume %.8f for %s is below broker minimum %.8f; "
+                "skipping trade to preserve risk limits.",
+                raw_volume, symbol, minimum,
             )
-            volume = maximum
-        return volume
+            return 0.0
+        return min(volume, maximum)
 
     def _pending_orders_for_side(self, symbol: str, side: str):
         """Return this strategy's pending orders for one side; never inspect open positions."""
