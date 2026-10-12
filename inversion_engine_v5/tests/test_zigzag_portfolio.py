@@ -88,7 +88,7 @@ class StrategyTests(unittest.TestCase):
 
         # A 22:00 reopen means the 60-minute wait ends at 23:00; the
         # permitted window continues until 08:00 the following day.
-        bars = [stamp(5, 21, 50), stamp(5, 21, 55), stamp(5, 22), stamp(5, 22, 5)]
+        bars = [stamp(5, 21, 10), stamp(5, 21, 15), stamp(5, 22), stamp(5, 22, 5)]
         self.assertEqual(
             gold_fill_window_timestamps(bars, stamp(5, 23)),
             (stamp(5, 23), stamp(6, 8)),
