@@ -71,7 +71,7 @@ class StrategyTests(unittest.TestCase):
             return int(datetime.datetime(2026, 1, day, hour, minute, tzinfo=datetime.timezone.utc).timestamp())
 
         no_gap = [stamp(5, 22), stamp(5, 22, 5), stamp(5, 22, 10)]
-        wrong_hour = [stamp(5, 20, 55), stamp(5, 22)]
+        wrong_hour = [stamp(5, 20, 55), stamp(5, 21, 50)]
         self.assertIsNone(detect_gold_reopen_timestamp(no_gap))
         self.assertIsNone(detect_gold_reopen_timestamp(wrong_hour))
 
