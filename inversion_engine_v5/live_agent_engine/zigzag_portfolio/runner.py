@@ -220,16 +220,31 @@ class ZigZagPortfolioRunner:
         )
         if not swings:
             return
-        # Process every newly observed swing event, not only the newest event.
-        # Pending BUY and SELL orders are managed independently: at most one
-        # pending order per side; already-open positions are never counted here.
+        # The detector returns swings from the entire fetched history. Only
+        # consider the newest event per swing kind; replaying every unseen
+        # historical event at startup can rapidly submit hundreds of stale
+        # orders and hit the broker's active-order limit.
+        latest_by_kind = {}
+        for swing in swings:
+            kind = swing.kind
+            event_timestamp = int(swing.event_timestamp or swing.timestamp)
+            previous = latest_by_kind.get(kind)
+            if previous is None or event_timestamp > int(
+                previous.event_timestamp or previous.timestamp
+            ):
+                latest_by_kind[kind] = swing
+
+        # BUY and SELL sides remain independent. At most the newest unseen
+        # event for each side is evaluated per poll; older backlog events are
+        # deliberately skipped because a newer event supersedes them.
+        last_swing = self.state.setdefault("last_swing", {})
         for swing in sorted(
-            swings,
+            latest_by_kind.values(),
             key=lambda item: int(item.event_timestamp or item.timestamp),
         ):
             event_timestamp = int(swing.event_timestamp or swing.timestamp)
             key = f"{asset}:{swing.kind}"
-            if int(self.state["last_swing"].get(key, 0)) >= event_timestamp:
+            if int(last_swing.get(key, 0)) >= event_timestamp:
                 continue
             if asset == "gold" and not in_dynamic_gold_fill_window(
                 times,
@@ -238,13 +253,16 @@ class ZigZagPortfolioRunner:
                 session_end_hour_utc=settings.GOLD_SESSION_END_UTC,
             ):
                 log.info(
-                    "Gold is outside its bar-detected fill window; keeping swing unprocessed "
-                    "so it can be evaluated when the window opens."
+                    "Gold is outside its bar-detected fill window; keeping newest %s swing "
+                    "unprocessed so it can be evaluated when the window opens.",
+                    swing.kind,
                 )
-                return
+                continue
             signal = signal_from_swing(swing, float(info.point), settings.REWARD_RISK)
             self._place_signal(asset, symbol, signal, balance, reference)
-            self.state["last_swing"][key] = event_timestamp
+            # Record this event after the placement attempt so a rejected or
+            # stale signal is not retried every five-second polling cycle.
+            last_swing[key] = event_timestamp
             self._save_state()
 
     def _weekly_exit(self) -> bool:
