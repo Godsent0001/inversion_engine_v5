@@ -83,6 +83,15 @@ class StrategyTests(unittest.TestCase):
             self.assertEqual(swing.event_index - swing.flip_index, 2)
             self.assertGreaterEqual(swing.event_index, swing.index)
 
+        live = detect_confirmed_swings(
+            highs, lows, times, depth=5, deviation_points=3, point=0.001,
+            backstep=2, repainting=True,
+        )
+        self.assertTrue(live)
+        for swing in live:
+            self.assertEqual(swing.event_index, swing.flip_index)
+            self.assertEqual(swing.event_timestamp, swing.flip_timestamp)
+
 
 if __name__ == "__main__":
     unittest.main()
