@@ -17,8 +17,15 @@ existing runner or replace the GRU strategy.
   free-margin check. It does not force a trade when minimum volume would exceed
   the calculated risk budget.
 - Default symbol preference is XAUUSDc then XAUUSDm; UKOILm then UKOILc.
-- Weekly close clock settings are UTC and must be verified against the broker's
-  actual weekly session close before any live activation.
+- Gold's daily entry window is detected from the first M5 bar after a >=45-minute
+  gap at 22:00/23:00 UTC; entries are allowed 60 minutes after that bar until 08:00 UTC.
+- Weekend close/open are inferred from the latest >=40-hour gap in M5 history.
+  The runner estimates the next weekly close from the last bar before that gap and
+  closes strategy positions during the configured 30-minute pre-close window.
+  It fetches 2,500 bars so the previous weekend gap remains available later in the week.
+- This weekly schedule is inferred from the previous observed weekend session; a
+  broker schedule/DST change that differs from the previous week can shift the estimate.
+  Verify the behavior on a demo account before enabling live trading.
 
 ## Important strategy-parity limitation
 
