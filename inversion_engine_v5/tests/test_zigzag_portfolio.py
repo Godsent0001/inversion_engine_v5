@@ -11,6 +11,7 @@ from zigzag_portfolio.strategy import (
     detect_weekend_close_bar_timestamp,
     detect_weekend_reopen_timestamp,
     in_dynamic_gold_fill_window,
+    gold_fill_window_timestamps,
     in_dynamic_weekly_exit_window,
     in_gold_session,
     signal_from_swing,
@@ -49,6 +50,11 @@ class RiskReferenceTests(unittest.TestCase):
 
 
 class StrategyTests(unittest.TestCase):
+    def test_gold_risk_is_exactly_twice_oil_risk(self):
+        from zigzag_portfolio import settings
+        self.assertAlmostEqual(settings.GOLD_RISK_PERCENT, 2 * settings.OIL_RISK_PERCENT)
+
+
     def test_gold_session_crosses_midnight_utc(self):
         import datetime
 
@@ -71,6 +77,22 @@ class StrategyTests(unittest.TestCase):
         self.assertEqual(detect_gold_reopen_timestamp(bars), stamp(5, 23))
         self.assertFalse(in_dynamic_gold_fill_window(bars, stamp(5, 23, 55)))
         self.assertTrue(in_dynamic_gold_fill_window(bars, stamp(6, 0)))
+        self.assertTrue(in_dynamic_gold_fill_window(bars, stamp(6, 7, 55)))
+        self.assertFalse(in_dynamic_gold_fill_window(bars, stamp(6, 8)))
+
+    def test_gold_22_utc_reopen_window_ends_at_next_08_utc_not_23_utc(self):
+        import datetime
+
+        def stamp(day, hour, minute=0):
+            return int(datetime.datetime(2026, 1, day, hour, minute, tzinfo=datetime.timezone.utc).timestamp())
+
+        # A 22:00 reopen means the 60-minute wait ends at 23:00; the
+        # permitted window continues until 08:00 the following day.
+        bars = [stamp(5, 21, 50), stamp(5, 21, 55), stamp(5, 22), stamp(5, 22, 5)]
+        self.assertEqual(
+            gold_fill_window_timestamps(bars, stamp(5, 23)),
+            (stamp(5, 23), stamp(6, 8)),
+        )
         self.assertTrue(in_dynamic_gold_fill_window(bars, stamp(6, 7, 55)))
         self.assertFalse(in_dynamic_gold_fill_window(bars, stamp(6, 8)))
 
