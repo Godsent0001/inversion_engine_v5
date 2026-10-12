@@ -92,14 +92,14 @@ class ZigZagPortfolioRunner:
         volume = min(volume, maximum)
         return volume
 
-    def _cancel_pending_side(self, symbol: str, side: str) -> None:
+    def _cancel_pending_side(self, symbol: str, side: str, keep_ticket: int | None = None) -> None:
         orders = mt5.orders_get(symbol=symbol)
         if orders is None:
             log.error("Could not retrieve pending orders for %s; refusing replacement", symbol)
             return
         desired = mt5.ORDER_TYPE_BUY_STOP if side == "buy" else mt5.ORDER_TYPE_SELL_STOP
         for order in orders:
-            if order.magic != settings.MAGIC or order.type != desired:
+            if order.magic != settings.MAGIC or order.type != desired or order.ticket == keep_ticket:
                 continue
             request = {"action": mt5.TRADE_ACTION_REMOVE, "order": order.ticket, "symbol": symbol}
             if settings.LIVE_TRADING_ENABLED:
@@ -158,12 +158,16 @@ class ZigZagPortfolioRunner:
         )
         if not settings.LIVE_TRADING_ENABLED:
             log.info("[DRY RUN] Pending order not sent.")
+            self._cancel_pending_side(symbol, signal.side)
             return
         result = mt5.order_send(request)
         if result is None or result.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
             log.error("Pending order rejected: %s", mt5.last_error() if result is None else result.comment)
             return
         log.info("Pending order accepted: ticket=%s", result.order)
+        # Keep the existing pending order until the replacement is accepted.
+        # Exclude the newly accepted ticket while removing older same-side orders.
+        self._cancel_pending_side(symbol, signal.side, keep_ticket=int(result.order))
 
     def _process_symbol(self, asset: str, symbol: str, balance: float, reference: float) -> None:
         rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, settings.FETCH_BARS)
@@ -196,7 +200,6 @@ class ZigZagPortfolioRunner:
             self._save_state()
             return
         signal = signal_from_swing(swing, float(info.point), settings.REWARD_RISK)
-        self._cancel_pending_side(symbol, signal.side)
         self._place_signal(asset, symbol, signal, balance, reference)
         self.state["last_swing"][key] = swing.timestamp
         self._save_state()
