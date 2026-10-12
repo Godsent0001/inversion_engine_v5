@@ -610,8 +610,9 @@ class ZigZagPortfolioRunner:
             )
             return
         log.info("DEBUG cycle: %s/%s fetched %s M5 bars.", asset, symbol, len(rates))
-        # Drop the forming candle; process every completed bar in order.
-        closed = rates[:-1]
+        # Include the forming candle so repainting ZigZag candidates can trigger intrabar.
+        # Candidate signals may move/disappear until the M5 candle closes.
+        closed = rates
         highs = [float(row["high"]) for row in closed]
         lows = [float(row["low"]) for row in closed]
         times = [int(row["time"]) for row in closed]
