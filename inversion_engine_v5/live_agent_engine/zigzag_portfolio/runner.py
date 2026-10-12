@@ -18,7 +18,12 @@ import MetaTrader5 as mt5
 from execution.mt5_connector import MT5Connector
 from zigzag_portfolio import settings
 from zigzag_portfolio.risk_state import PersistentRiskReference
-from zigzag_portfolio.strategy import detect_confirmed_swings, in_dynamic_gold_fill_window, signal_from_swing
+from zigzag_portfolio.strategy import (
+    detect_confirmed_swings,
+    in_dynamic_gold_fill_window,
+    in_dynamic_weekly_exit_window,
+    signal_from_swing,
+)
 
 log = logging.getLogger("zigzag_portfolio")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -210,13 +215,28 @@ class ZigZagPortfolioRunner:
         self._save_state()
 
     def _weekly_exit(self) -> bool:
-        now = datetime.now(timezone.utc)
-        if now.weekday() != settings.WEEKLY_CLOSE_WEEKDAY_UTC:
+        # Infer the next close from the most recent weekend-sized gap in MT5 bars.
+        # Fetch enough history to retain the previous weekend gap during Friday.
+        times: list[int] = []
+        for symbol in self.symbols.values():
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, settings.FETCH_BARS)
+            if rates is not None and len(rates) >= 2:
+                times = [int(row["time"]) for row in rates[:-1]]
+                if times:
+                    break
+        if not times:
+            log.error("Cannot infer weekly close: no usable M5 history.")
             return False
-        close_minutes = settings.WEEKLY_CLOSE_HOUR_UTC * 60
-        current_minutes = now.hour * 60 + now.minute
-        if not (close_minutes - settings.EXIT_MINUTES_BEFORE_WEEKLY_CLOSE <= current_minutes < close_minutes):
+        now_timestamp = int(datetime.now(timezone.utc).timestamp())
+        if not in_dynamic_weekly_exit_window(
+            times,
+            now_timestamp,
+            exit_minutes_before_close=settings.EXIT_MINUTES_BEFORE_WEEKLY_CLOSE,
+            timeframe_minutes=5,
+            gap_hours=settings.WEEKEND_GAP_HOURS,
+        ):
             return False
+        log.warning("Dynamic weekly exit window detected from observed weekend market gap.")
         positions = mt5.positions_get()
         if positions is None:
             log.error("Could not inspect positions during weekly exit window.")
