@@ -2,7 +2,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
+from zigzag_portfolio import runner as runner_module
 from zigzag_portfolio.risk_state import PersistentRiskReference
 from zigzag_portfolio.strategy import (
     Swing,
@@ -175,6 +177,38 @@ class StrategyTests(unittest.TestCase):
         for swing in live:
             self.assertEqual(swing.event_index, swing.flip_index)
             self.assertEqual(swing.event_timestamp, swing.flip_timestamp)
+
+
+class RunnerReconciliationTests(unittest.TestCase):
+    def test_missing_saved_pending_order_is_rearmed_if_no_fill_or_position(self):
+        runner = runner_module.ZigZagPortfolioRunner.__new__(
+            runner_module.ZigZagPortfolioRunner
+        )
+        shadow = {
+            "side": "buy",
+            "entry": 100.0,
+            "stop_loss": 95.0,
+            "take_profit": 115.0,
+            "swing_timestamp": 100,
+            "last_checked_timestamp": 100,
+            "submitted": True,
+            "consumed": False,
+        }
+        runner.state = {"shadow_book": {"oil": {"buy": shadow, "sell": None}}}
+        runner._pending_orders_for_side = lambda symbol, side: []
+        runner._save_state = Mock()
+        runner._place_signal = Mock(return_value="accepted")
+
+        closed = [{"time": 200, "high": 99.0, "low": 98.0}]
+        with patch.object(runner_module.mt5, "positions_get", return_value=[]):
+            runner._advance_shadow_orders(
+                "oil", "UKOILm", closed, [200], True, 1000.0, 1000.0
+            )
+
+        runner._place_signal.assert_called_once()
+        self.assertTrue(shadow["submitted"])
+        self.assertFalse(shadow["consumed"])
+        self.assertEqual(shadow["last_checked_timestamp"], 200)
 
 
 if __name__ == "__main__":
