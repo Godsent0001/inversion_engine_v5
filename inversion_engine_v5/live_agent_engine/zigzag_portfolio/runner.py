@@ -37,13 +37,14 @@ class ZigZagPortfolioRunner:
         self.risk_path = Path(__file__).resolve().parents[1] / settings.RISK_STATE_FILE
         self.risk_reference = PersistentRiskReference(self.risk_path)
         self.state = self._load_state()
+        self.state.setdefault("shadow_book", {})
         self.symbols: dict[str, str] = {}
 
     def _load_state(self) -> dict:
         if self.state_path.exists():
             with self.state_path.open("r", encoding="utf-8") as handle:
                 return json.load(handle)
-        return {"last_swing": {}, "symbol_map": {}}
+        return {"last_swing": {}, "symbol_map": {}, "shadow_book": {}}
 
     def _save_state(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -294,12 +295,125 @@ class ZigZagPortfolioRunner:
             else:
                 log.warning("Closed Gold position %s opened outside the allowed fill window.", position.ticket)
 
+    def _shadow_for(self, asset: str) -> dict:
+        book = self.state.setdefault("shadow_book", {})
+        return book.setdefault(asset, {"buy": None, "sell": None})
+
+    def _remove_side_if_present(self, symbol: str, side: str) -> None:
+        """Best-effort remove broker pending orders for a consumed shadow signal."""
+        orders = self._pending_orders_for_side(symbol, side)
+        if orders is None:
+            return
+        for order in orders:
+            result = mt5.order_send({
+                "action": mt5.TRADE_ACTION_REMOVE,
+                "order": order.ticket,
+                "symbol": symbol,
+                "magic": settings.MAGIC,
+                "comment": "ZZ shadow consumed",
+            })
+            if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+                log.error("Could not remove consumed %s order %s", side, order.ticket)
+
+    def _store_shadow_signal(self, asset: str, signal) -> None:
+        """Replace only the same-side shadow order, preserving the opposite side."""
+        book = self._shadow_for(asset)
+        book[signal.side] = {
+            "side": signal.side,
+            "entry": float(signal.entry),
+            "stop_loss": float(signal.stop_loss),
+            "take_profit": float(signal.take_profit),
+            "swing_timestamp": int(signal.swing_timestamp),
+            "last_checked_timestamp": int(signal.swing_timestamp),
+            "submitted": False,
+            "consumed": False,
+        }
+        self._save_state()
+
+    def _advance_shadow_orders(
+        self, asset: str, symbol: str, closed, times: list[int],
+        gold_fill_allowed: bool, balance: float, reference: float,
+    ) -> None:
+        """Advance shadow orders across every completed bar, regardless of session.
+
+        A shadow order touched while not submitted is consumed, not resurrected
+        at the next session. Untouched orders are sent to MT5 when entry is
+        allowed. Once submitted, MT5 owns the actual fill lifecycle.
+        """
+        book = self._shadow_for(asset)
+        changed = False
+        for side in ("buy", "sell"):
+            order = book.get(side)
+            if not order or order.get("consumed"):
+                continue
+
+            # Reconcile an order submitted before a restart. If MT5 no longer
+            # has it, don't recreate it: it may have filled or been cancelled.
+            if order.get("submitted"):
+                broker_orders = self._pending_orders_for_side(symbol, side)
+                if broker_orders is None:
+                    continue
+                if not broker_orders:
+                    order["consumed"] = True
+                    changed = True
+                continue
+
+            entry = float(order["entry"])
+            created = int(order["swing_timestamp"])
+            checked = int(order.get("last_checked_timestamp", created))
+            touched_at = None
+            for row in closed:
+                bar_time = int(row["time"])
+                if bar_time <= max(created, checked):
+                    continue
+                touched = float(row["high"]) >= entry if side == "buy" else float(row["low"]) <= entry
+                if touched:
+                    touched_at = bar_time
+                    break
+                checked = bar_time
+
+            if touched_at is not None:
+                order["last_checked_timestamp"] = touched_at
+                order["consumed"] = True
+                changed = True
+                log.info(
+                    "%s shadow %s at %.8f was touched on %s without a live order; consumed.",
+                    asset, side, entry, datetime.fromtimestamp(touched_at, timezone.utc).isoformat(),
+                )
+                continue
+
+            if checked != int(order.get("last_checked_timestamp", created)):
+                order["last_checked_timestamp"] = checked
+                changed = True
+
+            if asset == "gold" and not gold_fill_allowed:
+                continue
+
+            from zigzag_portfolio.strategy import PendingSignal
+            signal = PendingSignal(
+                side=side,
+                entry=entry,
+                stop_loss=float(order["stop_loss"]),
+                take_profit=float(order["take_profit"]),
+                swing_timestamp=created,
+            )
+            self._place_signal(asset, symbol, signal, balance, reference)
+            broker_orders = self._pending_orders_for_side(symbol, side) if settings.LIVE_TRADING_ENABLED else []
+            # In dry-run mode, retain the shadow order for inspection and replay.
+            if not settings.LIVE_TRADING_ENABLED:
+                continue
+            if broker_orders:
+                order["submitted"] = True
+                changed = True
+        if changed:
+            self._save_state()
+
     def _process_symbol(self, asset: str, symbol: str, balance: float, reference: float) -> None:
         rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, settings.FETCH_BARS)
         if rates is None or len(rates) < settings.DEPTH + settings.BACKSTEP + 5:
             log.warning("Insufficient M5 bars for %s", symbol)
             return
-        # Drop the still-forming candle; the strategy acts only on completed bars.
+        # Drop the forming candle; process every completed bar in order.
         closed = rates[:-1]
         highs = [float(row["high"]) for row in closed]
         lows = [float(row["low"]) for row in closed]
@@ -311,83 +425,67 @@ class ZigZagPortfolioRunner:
             highs, lows, times, settings.DEPTH, settings.DEVIATION_POINTS,
             float(info.point), settings.BACKSTEP, repainting=True,
         )
+        now_timestamp = int(datetime.now(timezone.utc).timestamp())
         gold_fill_allowed = True
         if asset == "gold":
-            # Use wall-clock UTC, not the last completed bar's open time, so
-            # the 08:00 UTC cutoff is enforced without a five-minute delay.
-            now_timestamp = int(datetime.now(timezone.utc).timestamp())
             gold_fill_allowed = in_dynamic_gold_fill_window(
-                times,
-                now_timestamp,
-                wait_minutes=60,
+                times, now_timestamp, wait_minutes=60,
                 session_end_hour_utc=settings.GOLD_SESSION_END_UTC,
             )
-            if not gold_fill_allowed:
-                # GTC orders must not survive outside Gold's permitted fill window.
-                if not self._remove_pending_orders(symbol):
-                    log.error("One or more Gold pending orders could not be cancelled outside session.")
-                self._close_gold_positions_opened_outside_window(times, now_timestamp)
-        if not swings:
-            return
-        # Process unseen swing events in event-time order, as the strategy
-        # runs bar by bar. Persistent timestamps prevent replaying events
-        # already handled before a restart.
+        # Every new signal updates only its own side's shadow order. Signals are
+        # recorded even outside the Gold window, because the backtest order book
+        # exists outside the permitted fill session too.
         last_swing = self.state.setdefault("last_swing", {})
-        for swing in sorted(
-            swings,
-            key=lambda item: int(item.event_timestamp or item.timestamp),
-        ):
+        for swing in sorted(swings, key=lambda item: int(item.event_timestamp or item.timestamp)):
             event_timestamp = int(swing.event_timestamp or swing.timestamp)
             key = f"{asset}:{swing.kind}"
             if int(last_swing.get(key, 0)) >= event_timestamp:
                 continue
-            if asset == "gold" and not gold_fill_allowed:
-                log.info(
-                    "Gold is outside its permitted fill window; keeping %s swing unprocessed "
-                    "for evaluation when the window opens.",
-                    swing.kind,
-                )
-                continue
             signal = signal_from_swing(swing, float(info.point), settings.REWARD_RISK)
-            self._place_signal(asset, symbol, signal, balance, reference)
-            # Record this event after the placement attempt so a rejected or
-            # stale signal is not retried every five-second polling cycle.
+            self._store_shadow_signal(asset, signal)
             last_swing[key] = event_timestamp
             self._save_state()
 
+        self._advance_shadow_orders(
+            asset, symbol, closed, times, gold_fill_allowed, balance, reference
+        )
+
     def _weekly_exit(self) -> bool:
-        # Infer the next close from the most recent weekend-sized gap in MT5 bars.
-        # Fetch enough history to retain the previous weekend gap during Friday.
-        times: list[int] = []
-        for symbol in self.symbols.values():
-            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, settings.FETCH_BARS)
-            if rates is not None and len(rates) >= 2:
-                times = [int(row["time"]) for row in rates[:-1]]
-                if times:
-                    break
-        if not times:
-            log.error("Cannot infer weekly close: no usable M5 history.")
-            return False
+        """Close strategy positions in each symbol's own observed weekly-close window.
+
+        The Python MT5 API does not expose broker session calendars, so each
+        symbol's schedule is inferred independently from its own M5 history.
+        This is safer than using Gold's gap for UK Oil, but holiday/DST changes
+        still require broker-session verification.
+        """
         now_timestamp = int(datetime.now(timezone.utc).timestamp())
-        if not in_dynamic_weekly_exit_window(
-            times,
-            now_timestamp,
-            exit_minutes_before_close=settings.EXIT_MINUTES_BEFORE_WEEKLY_CLOSE,
-            timeframe_minutes=5,
-            gap_hours=settings.WEEKEND_GAP_HOURS,
-        ):
+        exiting_symbols: set[str] = set()
+        for symbol in set(self.symbols.values()):
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, settings.FETCH_BARS)
+            if rates is None or len(rates) < 2:
+                log.error("Cannot infer weekly close for %s: no usable M5 history.", symbol)
+                continue
+            times = [int(row["time"]) for row in rates[:-1]]
+            if in_dynamic_weekly_exit_window(
+                times, now_timestamp,
+                exit_minutes_before_close=settings.EXIT_MINUTES_BEFORE_WEEKLY_CLOSE,
+                timeframe_minutes=5, gap_hours=settings.WEEKEND_GAP_HOURS,
+            ):
+                exiting_symbols.add(symbol)
+        if not exiting_symbols:
             return False
-        log.warning("Dynamic weekly exit window detected from observed weekend market gap.")
+
+        log.warning("Weekly exit window detected for symbols: %s", ", ".join(sorted(exiting_symbols)))
         positions = mt5.positions_get()
         if positions is None:
             log.error("Could not inspect positions during weekly exit window.")
             return True
         for position in positions:
-            if position.magic != settings.MAGIC:
+            if position.magic != settings.MAGIC or position.symbol not in exiting_symbols:
                 continue
-            info = mt5.symbol_info(position.symbol)
             tick = mt5.symbol_info_tick(position.symbol)
-            if info is None or tick is None:
+            if tick is None:
+                log.error("Cannot close weekly position %s: missing tick.", position.ticket)
                 continue
             is_buy = position.type == mt5.POSITION_TYPE_BUY
             request = {
