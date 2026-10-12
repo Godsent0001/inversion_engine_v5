@@ -332,13 +332,13 @@ class ZigZagPortfolioRunner:
             if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
                 log.error("Could not remove consumed %s order %s", side, order.ticket)
 
-    def _store_shadow_signal(self, asset: str, symbol: str, signal) -> None:
+    def _store_shadow_signal(self, asset: str, symbol: str, signal, gold_fill_allowed: bool) -> None:
         """Replace only the same-side shadow order, preserving the opposite side."""
         book = self._shadow_for(asset)
         previous = book.get(signal.side)
-        if previous and previous.get("submitted"):
-            # A new same-side signal supersedes the previous broker order even
-            # when the new shadow signal is not yet eligible for submission.
+        if previous and previous.get("submitted") and asset == "gold" and not gold_fill_allowed:
+            # Outside the permitted Gold session, the superseded broker order
+            # must not remain executable while its replacement waits in shadow.
             self._remove_side_if_present(symbol, signal.side)
         book[signal.side] = {
             "side": signal.side,
@@ -464,7 +464,7 @@ class ZigZagPortfolioRunner:
             if int(last_swing.get(key, 0)) >= event_timestamp:
                 continue
             signal = signal_from_swing(swing, float(info.point), settings.REWARD_RISK)
-            self._store_shadow_signal(asset, symbol, signal)
+            self._store_shadow_signal(asset, symbol, signal, gold_fill_allowed)
             last_swing[key] = event_timestamp
             self._save_state()
 
