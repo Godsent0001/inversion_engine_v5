@@ -1,6 +1,12 @@
 """Configuration for the isolated ZigZag portfolio runner."""
-# Explicit opt-in is required before this strategy can send live orders.
+import os
+
+# Keep disabled until the demo terminal/account connection has been verified.
 LIVE_TRADING_ENABLED = False
+# Demo-only protection for the initial local MT5 test.
+DEMO_ONLY = True
+# Optional full path to terminal64.exe; can also be set in the environment.
+MT5_TERMINAL_PATH = os.getenv("ZIGZAG_MT5_TERMINAL_PATH")
 SYMBOL_CANDIDATES = {
     "gold": ("XAUUSDc", "XAUUSDm"),
     "oil": ("UKOILm", "UKOILc"),
