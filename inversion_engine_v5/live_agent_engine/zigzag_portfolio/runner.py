@@ -109,13 +109,21 @@ class ZigZagPortfolioRunner:
             if order.magic == settings.MAGIC and order.type == pending_type
         ]
 
-    def _replace_pending_side_after_acceptance(self, symbol: str, side: str, new_ticket: int) -> None:
-        """After a replacement is accepted, remove older pending orders on that side only."""
-        orders = self._pending_orders_for_side(symbol, side)
+    def _remove_pending_orders(self, symbol: str, side: str | None = None) -> bool:
+        """Remove this strategy's pending orders; optionally limit removal to one side."""
+        orders = mt5.orders_get(symbol=symbol)
         if orders is None:
-            return
+            log.error("Could not inspect pending orders for %s: %s", symbol, mt5.last_error())
+            return False
+        pending_types = {
+            mt5.ORDER_TYPE_BUY_STOP: "buy",
+            mt5.ORDER_TYPE_SELL_STOP: "sell",
+        }
+        success = True
         for order in orders:
-            if int(order.ticket) == int(new_ticket):
+            if order.magic != settings.MAGIC or order.type not in pending_types:
+                continue
+            if side is not None and pending_types[order.type] != side:
                 continue
             result = mt5.order_send({
                 "action": mt5.TRADE_ACTION_REMOVE,
@@ -126,11 +134,14 @@ class ZigZagPortfolioRunner:
             })
             if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
                 log.error(
-                    "Could not remove superseded %s pending order %s: %s",
-                    side, order.ticket, mt5.last_error() if result is None else result.comment,
+                    "Could not remove %s pending order %s: %s",
+                    pending_types[order.type], order.ticket,
+                    mt5.last_error() if result is None else result.comment,
                 )
+                success = False
             else:
-                log.info("Removed superseded %s pending order ticket=%s", side, order.ticket)
+                log.info("Removed %s pending order ticket=%s", pending_types[order.type], order.ticket)
+        return success
 
     def _place_signal(self, asset: str, symbol: str, signal, balance: float, reference: float) -> None:
         info = mt5.symbol_info(symbol)
@@ -155,11 +166,12 @@ class ZigZagPortfolioRunner:
             return
         order_type = mt5.ORDER_TYPE_BUY_STOP if signal.side == "buy" else mt5.ORDER_TYPE_SELL_STOP
 
-        # The newest qualifying swing replaces the pending order on that
-        # side, regardless of entry direction. Submit the replacement first;
-        # only after acceptance remove older same-side pending orders.
-        existing = self._pending_orders_for_side(symbol, signal.side)
-        if existing is None:
+        # A new qualifying swing supersedes the old pending order on its
+        # side. Remove the old order first, so a broker rejection of the new
+        # request cannot leave the superseded order active. The opposite side
+        # is untouched.
+        if not self._remove_pending_orders(symbol, signal.side):
+            log.error("Could not clear old %s pending order(s); refusing replacement.", signal.side)
             return
 
         request = {
@@ -194,10 +206,55 @@ class ZigZagPortfolioRunner:
             log.error("Pending order rejected: %s", mt5.last_error() if result is None else result.comment)
             return
         log.info("Pending %s accepted: ticket=%s", signal.side, result.order)
-        if result.order:
-            self._replace_pending_side_after_acceptance(symbol, signal.side, int(result.order))
-        else:
-            log.error("Accepted pending order returned no ticket; old %s orders were retained", signal.side)
+        if not result.order:
+            log.error("Accepted pending order returned no ticket; no older same-side order remains.")
+
+    def _close_gold_positions_opened_outside_window(self, times: list[int], now_timestamp: int) -> None:
+        """Close a Gold position immediately if a pending order raced past session cleanup."""
+        positions = mt5.positions_get()
+        if positions is None:
+            log.error("Could not inspect positions for off-session Gold fills.")
+            return
+        for position in positions:
+            if position.magic != settings.MAGIC or position.symbol != self.symbols.get("gold"):
+                continue
+            if in_dynamic_gold_fill_window(
+                times,
+                int(position.time),
+                wait_minutes=60,
+                session_end_hour_utc=settings.GOLD_SESSION_END_UTC,
+            ):
+                continue
+            info = mt5.symbol_info(position.symbol)
+            tick = mt5.symbol_info_tick(position.symbol)
+            if info is None or tick is None:
+                log.error("Cannot close off-session Gold position %s: missing symbol/tick data.", position.ticket)
+                continue
+            is_buy = position.type == mt5.POSITION_TYPE_BUY
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": position.symbol,
+                "position": position.ticket,
+                "volume": position.volume,
+                "type": mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY,
+                "price": tick.bid if is_buy else tick.ask,
+                "deviation": 20,
+                "magic": settings.MAGIC,
+                "comment": "ZZ off-session cleanup",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            if not settings.LIVE_TRADING_ENABLED:
+                log.warning("[DRY RUN] Would close off-session Gold position ticket=%s", position.ticket)
+                continue
+            result = mt5.order_send(request)
+            if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+                log.error(
+                    "Failed to close off-session Gold position %s: %s",
+                    position.ticket, mt5.last_error() if result is None else result.comment,
+                )
+            else:
+                log.warning("Closed Gold position %s opened outside the allowed fill window.", position.ticket)
 
     def _process_symbol(self, asset: str, symbol: str, balance: float, reference: float) -> None:
         rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, settings.FETCH_BARS)
@@ -216,6 +273,22 @@ class ZigZagPortfolioRunner:
             highs, lows, times, settings.DEPTH, settings.DEVIATION_POINTS,
             float(info.point), settings.BACKSTEP, repainting=True,
         )
+        gold_fill_allowed = True
+        if asset == "gold":
+            # Use wall-clock UTC, not the last completed bar's open time, so
+            # the 08:00 UTC cutoff is enforced without a five-minute delay.
+            now_timestamp = int(datetime.now(timezone.utc).timestamp())
+            gold_fill_allowed = in_dynamic_gold_fill_window(
+                times,
+                now_timestamp,
+                wait_minutes=60,
+                session_end_hour_utc=settings.GOLD_SESSION_END_UTC,
+            )
+            if not gold_fill_allowed:
+                # GTC orders must not survive outside Gold's permitted fill window.
+                if not self._remove_pending_orders(symbol):
+                    log.error("One or more Gold pending orders could not be cancelled outside session.")
+                self._close_gold_positions_opened_outside_window(times, now_timestamp)
         if not swings:
             return
         # Process unseen swing events in event-time order, as the strategy
@@ -230,15 +303,10 @@ class ZigZagPortfolioRunner:
             key = f"{asset}:{swing.kind}"
             if int(last_swing.get(key, 0)) >= event_timestamp:
                 continue
-            if asset == "gold" and not in_dynamic_gold_fill_window(
-                times,
-                int(times[-1]),
-                wait_minutes=60,
-                session_end_hour_utc=settings.GOLD_SESSION_END_UTC,
-            ):
+            if asset == "gold" and not gold_fill_allowed:
                 log.info(
-                    "Gold is outside its bar-detected fill window; keeping newest %s swing "
-                    "unprocessed so it can be evaluated when the window opens.",
+                    "Gold is outside its permitted fill window; keeping %s swing unprocessed "
+                    "for evaluation when the window opens.",
                     swing.kind,
                 )
                 continue
