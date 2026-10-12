@@ -1,10 +1,7 @@
 """Configuration for the isolated ZigZag portfolio runner."""
 import os
 
-# Keep disabled until the demo terminal/account connection has been verified.
-LIVE_TRADING_ENABLED = False
-# Demo-only protection for the initial local MT5 test.
-DEMO_ONLY = True
+LIVE_TRADING_ENABLED = True
 # Optional full path to terminal64.exe; can also be set in the environment.
 MT5_TERMINAL_PATH = os.getenv("ZIGZAG_MT5_TERMINAL_PATH")
 SYMBOL_CANDIDATES = {
