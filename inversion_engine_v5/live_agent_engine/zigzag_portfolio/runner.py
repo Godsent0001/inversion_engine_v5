@@ -122,7 +122,7 @@ class ZigZagPortfolioRunner:
                 "order": order.ticket,
                 "symbol": symbol,
                 "magic": settings.MAGIC,
-                "comment": "Replace same-side ZigZag pending order",
+                "comment": "ZZ replace",
             })
             if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
                 log.error(
