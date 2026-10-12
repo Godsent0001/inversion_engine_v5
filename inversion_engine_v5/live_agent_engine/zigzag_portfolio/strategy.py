@@ -62,20 +62,48 @@ def detect_gold_reopen_timestamp(
     return reopen
 
 
+def gold_fill_window_timestamps(
+    times: Sequence[int],
+    current_timestamp: int,
+    wait_minutes: int = 60,
+    session_end_hour_utc: int = 8,
+) -> tuple[int, int] | None:
+    """Return the active Gold fill window as [start, end) UTC timestamps.
+
+    The end is the first configured session-end timestamp strictly after the
+    start. This avoids hour-only checks incorrectly ending a window at 23:00
+    when the market reopened at 22:00 UTC.
+    """
+    if not times or wait_minutes < 0 or not 0 <= session_end_hour_utc <= 23:
+        return None
+    now = int(current_timestamp)
+    reopen = detect_gold_reopen_timestamp(times)
+    if reopen is None:
+        return None
+    start = reopen + wait_minutes * 60
+    start_dt = datetime.fromtimestamp(start, tz=timezone.utc)
+    end_dt = start_dt.replace(
+        hour=session_end_hour_utc, minute=0, second=0, microsecond=0
+    )
+    if int(end_dt.timestamp()) <= start:
+        from datetime import timedelta
+        end_dt += timedelta(days=1)
+    end = int(end_dt.timestamp())
+    if not start <= now < end:
+        return None
+    return start, end
+
+
 def in_dynamic_gold_fill_window(
     times: Sequence[int],
     current_timestamp: int,
     wait_minutes: int = 60,
     session_end_hour_utc: int = 8,
 ) -> bool:
-    """Allow Gold entries only 60 minutes after a bar-detected reopen until 08:00 UTC."""
-    if not times or wait_minutes < 0 or not 0 <= session_end_hour_utc <= 23:
-        return False
-    reopen = detect_gold_reopen_timestamp(times)
-    if reopen is None or int(current_timestamp) < reopen + wait_minutes * 60:
-        return False
-    now = datetime.fromtimestamp(int(current_timestamp), tz=timezone.utc)
-    return now.hour < session_end_hour_utc
+    """True only inside the timestamp-defined Gold window [reopen+wait, next 08:00)."""
+    return gold_fill_window_timestamps(
+        times, current_timestamp, wait_minutes, session_end_hour_utc
+    ) is not None
 
 def detect_weekend_reopen_timestamp(
     times: Sequence[int],
