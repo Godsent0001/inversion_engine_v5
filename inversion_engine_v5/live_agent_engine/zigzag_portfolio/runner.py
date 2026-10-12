@@ -398,6 +398,11 @@ class ZigZagPortfolioRunner:
                 order["last_checked_timestamp"] = touched_at
                 order["consumed"] = True
                 changed = True
+                # This signal superseded any older same-side order. If the new
+                # shadow signal was touched before submission, do not leave the
+                # old broker order active as an accidental substitute.
+                if settings.LIVE_TRADING_ENABLED:
+                    self._remove_side_if_present(symbol, side)
                 log.info(
                     "%s shadow %s at %.8f was touched on %s without a live order; consumed.",
                     asset, side, entry, datetime.fromtimestamp(touched_at, timezone.utc).isoformat(),
