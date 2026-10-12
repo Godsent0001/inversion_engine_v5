@@ -19,18 +19,9 @@ class ZigZagMT5Connection:
         self.last_reconnect_time = 0.0
         self.reconnect_cooldown = 5.0
 
-    def _demo_account_allowed(self) -> bool:
+    def _account_connection_valid(self) -> bool:
         account = mt5.account_info()
-        if account is None:
-            return False
-        server = str(getattr(account, "server", "") or "").lower()
-        configured_server = str(getattr(account_settings, "MT5_SERVER", "") or "").lower()
-        if settings.DEMO_ONLY:
-            allowed = any(marker in server for marker in ("demo", "trial"))
-            if not allowed:
-                # Do not allow the demo-test build to place orders on a real server.
-                return False
-        return bool(server and configured_server)
+        return account is not None and bool(str(getattr(account, "server", "") or ""))
 
     def connect(self) -> bool:
         terminal_path = (
@@ -57,13 +48,6 @@ class ZigZagMT5Connection:
                 print("MT5 terminal/account is not connected; refusing to start.")
                 mt5.shutdown()
                 return False
-            if not self._demo_account_allowed():
-                print(
-                    "DEMO-ONLY SAFETY CHECK FAILED: connected account server is not "
-                    "identified as a demo/trial server. No orders will be sent."
-                )
-                mt5.shutdown()
-                return False
             print(
                 f"MT5 connected | login={account.login} | server={account.server} "
                 f"| balance={account.balance}"
@@ -82,7 +66,7 @@ class ZigZagMT5Connection:
             terminal = mt5.terminal_info()
             account = mt5.account_info()
             if terminal is not None and terminal.connected and account is not None:
-                return self._demo_account_allowed()
+                return self._account_connection_valid()
             now = time.time()
             if now - self.last_reconnect_time < self.reconnect_cooldown:
                 return False
