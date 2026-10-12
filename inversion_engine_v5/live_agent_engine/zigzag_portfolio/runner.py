@@ -20,6 +20,7 @@ from zigzag_portfolio import settings
 from zigzag_portfolio.risk_state import PersistentRiskReference
 from zigzag_portfolio.strategy import (
     detect_confirmed_swings,
+    detect_gold_reopen_timestamp,
     in_dynamic_gold_fill_window,
     in_dynamic_weekly_exit_window,
     signal_from_swing,
@@ -215,8 +216,15 @@ class ZigZagPortfolioRunner:
         if positions is None:
             log.error("Could not inspect positions for off-session Gold fills.")
             return
+        reopen_timestamp = detect_gold_reopen_timestamp(times)
+        if reopen_timestamp is None:
+            return
         for position in positions:
             if position.magic != settings.MAGIC or position.symbol != self.symbols.get("gold"):
+                continue
+            # Do not close a legitimate position carried over from a previous
+            # permitted session. Only inspect fills after this session's reopen.
+            if int(position.time) < reopen_timestamp:
                 continue
             if in_dynamic_gold_fill_window(
                 times,
