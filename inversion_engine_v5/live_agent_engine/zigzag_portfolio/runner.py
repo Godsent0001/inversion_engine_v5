@@ -426,6 +426,11 @@ class ZigZagPortfolioRunner:
                 if broker_orders is None:
                     continue
                 if broker_orders:
+                    log.info(
+                        "%s %s shadow remains submitted: broker pending orders=%s",
+                        asset, side,
+                        [(int(item.ticket), float(item.price_open)) for item in broker_orders],
+                    )
                     continue
 
                 order_ticket = int(order.get("order_ticket") or 0)
@@ -513,6 +518,11 @@ class ZigZagPortfolioRunner:
                 changed = True
 
             if asset == "gold" and not gold_fill_allowed:
+                log.info(
+                    "Gold %s setup deferred by session window: entry=%.8f "
+                    "submitted=%s consumed=%s",
+                    side, entry, order.get("submitted", False), order.get("consumed", False),
+                )
                 continue
 
             from zigzag_portfolio.strategy import PendingSignal
@@ -523,7 +533,12 @@ class ZigZagPortfolioRunner:
                 take_profit=float(order["take_profit"]),
                 swing_timestamp=created,
             )
+            log.info(
+                "Attempting %s %s shadow placement: entry=%.8f SL=%.8f TP=%.8f",
+                asset, side, entry, float(order["stop_loss"]), float(order["take_profit"]),
+            )
             placement_status = self._place_signal(asset, symbol, signal, balance, reference)
+            log.info("%s %s shadow placement result: %s", asset, side, placement_status)
             # Mark submitted only when MT5 accepted this specific submission;
             # an older same-side pending order is not proof of acceptance.
             if placement_status == "accepted":
@@ -580,6 +595,11 @@ class ZigZagPortfolioRunner:
             gold_fill_allowed = in_dynamic_gold_fill_window(
                 times, now_timestamp, wait_minutes=60,
                 session_end_hour_utc=settings.GOLD_SESSION_END_UTC,
+            )
+            log.info(
+                "Gold session check: fill_allowed=%s current_utc=%s session_end_hour_utc=%s",
+                gold_fill_allowed, datetime.now(timezone.utc).isoformat(),
+                settings.GOLD_SESSION_END_UTC,
             )
         # Every new signal updates only its own side's shadow order. Signals are
         # recorded even outside the Gold window, because the backtest order book
