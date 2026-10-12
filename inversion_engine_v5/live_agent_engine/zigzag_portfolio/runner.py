@@ -1,7 +1,7 @@
 """Standalone M5 ZigZag portfolio runner.
 
-Starts in dry-run mode. Live order submission requires LIVE_TRADING_ENABLED=True
-in this package's settings and should first be validated on an MT5 demo account.
+Order submission is controlled by LIVE_TRADING_ENABLED in zigzag_portfolio/settings.py.
+The connector uses MT5 credentials loaded from live_agent_engine/.env.
 """
 from __future__ import annotations
 
