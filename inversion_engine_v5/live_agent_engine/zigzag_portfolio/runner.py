@@ -239,8 +239,8 @@ class ZigZagPortfolioRunner:
         if not swings:
             return
         # Process every newly observed swing event, not only the newest event.
-        # Each qualifying setup can place its own pending order; buy and sell
-        # orders, including multiple orders on the same side, may coexist.
+        # Pending BUY and SELL orders are managed independently: at most one
+        # pending order per side; already-open positions are never counted here.
         for swing in sorted(
             swings,
             key=lambda item: int(item.event_timestamp or item.timestamp),
