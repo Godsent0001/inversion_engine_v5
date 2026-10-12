@@ -15,7 +15,7 @@ from pathlib import Path
 
 import MetaTrader5 as mt5
 
-from execution.mt5_connector import MT5Connector
+from zigzag_portfolio.mt5_connection import ZigZagMT5Connection
 from zigzag_portfolio import settings
 from zigzag_portfolio.risk_state import PersistentRiskReference
 from zigzag_portfolio.strategy import (
@@ -31,7 +31,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 class ZigZagPortfolioRunner:
     def __init__(self) -> None:
-        self.connector = MT5Connector()
+        self.connector = ZigZagMT5Connection()
         self.state_path = Path(__file__).resolve().parents[1] / settings.STATE_FILE
         self.risk_path = Path(__file__).resolve().parents[1] / settings.RISK_STATE_FILE
         self.risk_reference = PersistentRiskReference(self.risk_path)
