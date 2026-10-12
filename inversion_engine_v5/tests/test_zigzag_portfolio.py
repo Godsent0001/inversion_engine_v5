@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from zigzag_portfolio.risk_state import PersistentRiskReference
-from zigzag_portfolio.strategy import Swing, detect_confirmed_swings, in_gold_session, signal_from_swing
+from zigzag_portfolio.strategy import (Swing, detect_confirmed_swings, detect_gold_reopen_timestamp, in_dynamic_gold_fill_window, in_gold_session, signal_from_swing)
 
 
 class RiskReferenceTests(unittest.TestCase):
@@ -48,6 +48,32 @@ class StrategyTests(unittest.TestCase):
         self.assertTrue(in_gold_session(stamp(23)))
         self.assertTrue(in_gold_session(stamp(7, 59)))
         self.assertFalse(in_gold_session(stamp(8)))
+
+
+    def test_gold_reopen_is_detected_from_gap_and_fill_window_is_dynamic(self):
+        import datetime
+
+        def stamp(day, hour, minute=0):
+            return int(datetime.datetime(2026, 1, day, hour, minute, tzinfo=datetime.timezone.utc).timestamp())
+
+        # 21:55 -> 23:00 is a 65-minute gap; 23:00 is the reopen bar.
+        bars = [stamp(5, 21, 50), stamp(5, 21, 55), stamp(5, 23), stamp(5, 23, 5), stamp(6, 0)]
+        self.assertEqual(detect_gold_reopen_timestamp(bars), stamp(5, 23))
+        self.assertFalse(in_dynamic_gold_fill_window(bars, stamp(5, 23, 55)))
+        self.assertTrue(in_dynamic_gold_fill_window(bars, stamp(6, 0)))
+        self.assertTrue(in_dynamic_gold_fill_window(bars, stamp(6, 7, 55)))
+        self.assertFalse(in_dynamic_gold_fill_window(bars, stamp(6, 8)))
+
+    def test_gold_reopen_requires_gap_and_22_or_23_utc_hour(self):
+        import datetime
+
+        def stamp(day, hour, minute=0):
+            return int(datetime.datetime(2026, 1, day, hour, minute, tzinfo=datetime.timezone.utc).timestamp())
+
+        no_gap = [stamp(5, 22), stamp(5, 22, 5), stamp(5, 22, 10)]
+        wrong_hour = [stamp(5, 20, 55), stamp(5, 22)]
+        self.assertIsNone(detect_gold_reopen_timestamp(no_gap))
+        self.assertIsNone(detect_gold_reopen_timestamp(wrong_hour))
 
     def test_swing_signal_uses_half_leg_stop_and_three_r_target(self):
         high = Swing(index=10, timestamp=100, price=110.0, kind="high", leg_start_price=100.0)
