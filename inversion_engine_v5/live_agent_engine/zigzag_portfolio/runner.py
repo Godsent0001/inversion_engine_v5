@@ -175,12 +175,12 @@ class ZigZagPortfolioRunner:
             return
         order_type = mt5.ORDER_TYPE_BUY_STOP if signal.side == "buy" else mt5.ORDER_TYPE_SELL_STOP
 
-        # A new qualifying swing supersedes the old pending order on its
-        # side. Remove the old order first, so a broker rejection of the new
-        # request cannot leave the superseded order active. The opposite side
-        # is untouched.
-        if not self._remove_pending_orders(symbol, signal.side):
-            log.error("Could not clear old %s pending order(s); refusing replacement.", signal.side)
+        # Snapshot old same-side orders. The replacement is sent first; only
+        # after MT5 accepts it do we cancel the superseded order(s). The
+        # opposite side is never affected.
+        old_orders = self._pending_orders_for_side(symbol, signal.side)
+        if old_orders is None:
+            log.error("Could not inspect existing %s orders; refusing replacement.", signal.side)
             return
 
         request = {
@@ -221,8 +221,25 @@ class ZigZagPortfolioRunner:
                     "Pending %s accepted on attempt %s/%s: ticket=%s",
                     signal.side, attempt, max_attempts, result.order,
                 )
-                if not result.order:
-                    log.error("Accepted pending order returned no ticket; no older same-side order remains.")
+                new_ticket = int(result.order or 0)
+                for old_order in old_orders:
+                    if new_ticket and int(old_order.ticket) == new_ticket:
+                        continue
+                    removed = mt5.order_send({
+                        "action": mt5.TRADE_ACTION_REMOVE,
+                        "order": old_order.ticket,
+                        "symbol": symbol,
+                        "magic": settings.MAGIC,
+                        "comment": "ZZ replaced after acceptance",
+                    })
+                    if removed is None or removed.retcode != mt5.TRADE_RETCODE_DONE:
+                        log.error(
+                            "New %s order accepted, but old order %s could not be cancelled: %s",
+                            signal.side, old_order.ticket,
+                            mt5.last_error() if removed is None else removed.comment,
+                        )
+                if not new_ticket:
+                    log.error("Accepted pending order returned no ticket; verify broker order list.")
                 return
 
             reason = mt5.last_error() if result is None else (
@@ -237,7 +254,7 @@ class ZigZagPortfolioRunner:
             else:
                 log.error(
                     "Pending %s rejected after %s attempts for %s: %s. "
-                    "The old same-side order was already removed.",
+                    "The existing same-side order was retained.",
                     signal.side, max_attempts, symbol, reason,
                 )
 
@@ -315,9 +332,14 @@ class ZigZagPortfolioRunner:
             if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
                 log.error("Could not remove consumed %s order %s", side, order.ticket)
 
-    def _store_shadow_signal(self, asset: str, signal) -> None:
+    def _store_shadow_signal(self, asset: str, symbol: str, signal) -> None:
         """Replace only the same-side shadow order, preserving the opposite side."""
         book = self._shadow_for(asset)
+        previous = book.get(signal.side)
+        if previous and previous.get("submitted"):
+            # A new same-side signal supersedes the previous broker order even
+            # when the new shadow signal is not yet eligible for submission.
+            self._remove_side_if_present(symbol, signal.side)
         book[signal.side] = {
             "side": signal.side,
             "entry": float(signal.entry),
@@ -442,7 +464,7 @@ class ZigZagPortfolioRunner:
             if int(last_swing.get(key, 0)) >= event_timestamp:
                 continue
             signal = signal_from_swing(swing, float(info.point), settings.REWARD_RISK)
-            self._store_shadow_signal(asset, signal)
+            self._store_shadow_signal(asset, symbol, signal)
             last_swing[key] = event_timestamp
             self._save_state()
 
