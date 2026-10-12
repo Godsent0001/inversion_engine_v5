@@ -184,7 +184,7 @@ class ZigZagPortfolioRunner:
             return
         swings = detect_confirmed_swings(
             highs, lows, times, settings.DEPTH, settings.DEVIATION_POINTS,
-            float(info.point), settings.BACKSTEP,
+            float(info.point), settings.BACKSTEP, repainting=True,
         )
         if not swings:
             return
