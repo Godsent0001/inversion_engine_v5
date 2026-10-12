@@ -38,6 +38,45 @@ def in_gold_session(timestamp: int, session_start_hour_utc: int = 23, session_en
     return session_start_hour_utc <= hour < session_end_hour_utc
 
 
+
+def detect_gold_reopen_timestamp(
+    times: Sequence[int],
+    gap_minutes: int = 45,
+) -> int | None:
+    """Return the latest Gold reopen bar detected from a gap in M5 history.
+
+    A reopen is the first bar after a gap of at least 45 minutes, provided
+    that bar opens during 22:00 or 23:00 UTC. This mirrors the portfolio
+    backtest instead of assuming a fixed daily reopen hour.
+    """
+    if gap_minutes <= 0:
+        raise ValueError("gap_minutes must be positive.")
+    gap_seconds = gap_minutes * 60
+    reopen: int | None = None
+    for previous, current in zip(times, times[1:]):
+        if int(current) - int(previous) < gap_seconds:
+            continue
+        hour = datetime.fromtimestamp(int(current), tz=timezone.utc).hour
+        if hour in (22, 23):
+            reopen = int(current)
+    return reopen
+
+
+def in_dynamic_gold_fill_window(
+    times: Sequence[int],
+    current_timestamp: int,
+    wait_minutes: int = 60,
+    session_end_hour_utc: int = 8,
+) -> bool:
+    """Allow Gold entries only 60 minutes after a bar-detected reopen until 08:00 UTC."""
+    if not times or wait_minutes < 0 or not 0 <= session_end_hour_utc <= 23:
+        return False
+    reopen = detect_gold_reopen_timestamp(times)
+    if reopen is None or int(current_timestamp) < reopen + wait_minutes * 60:
+        return False
+    now = datetime.fromtimestamp(int(current_timestamp), tz=timezone.utc)
+    return now.hour < session_end_hour_utc
+
 def _lowest_idx(values: Sequence[float], depth: int, start: int) -> int:
     minimum, index = values[start], start
     for i in range(start - 1, max(start - depth, -1), -1):
