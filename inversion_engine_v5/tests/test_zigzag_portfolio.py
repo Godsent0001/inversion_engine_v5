@@ -4,7 +4,17 @@ import unittest
 from pathlib import Path
 
 from zigzag_portfolio.risk_state import PersistentRiskReference
-from zigzag_portfolio.strategy import (Swing, detect_confirmed_swings, detect_gold_reopen_timestamp, in_dynamic_gold_fill_window, in_gold_session, signal_from_swing)
+from zigzag_portfolio.strategy import (
+    Swing,
+    detect_confirmed_swings,
+    detect_gold_reopen_timestamp,
+    detect_weekend_close_bar_timestamp,
+    detect_weekend_reopen_timestamp,
+    in_dynamic_gold_fill_window,
+    in_dynamic_weekly_exit_window,
+    in_gold_session,
+    signal_from_swing,
+)
 
 
 class RiskReferenceTests(unittest.TestCase):
@@ -74,6 +84,32 @@ class StrategyTests(unittest.TestCase):
         wrong_hour = [stamp(5, 20, 55), stamp(5, 21, 50)]
         self.assertIsNone(detect_gold_reopen_timestamp(no_gap))
         self.assertIsNone(detect_gold_reopen_timestamp(wrong_hour))
+
+    def test_weekend_open_close_and_dynamic_exit_window(self):
+        import datetime
+
+        def stamp(day, hour, minute=0):
+            return int(datetime.datetime(2026, 1, day, hour, minute, tzinfo=datetime.timezone.utc).timestamp())
+
+        # Friday 20:55 final bar, then Monday 00:00 first bar: 51h05m gap.
+        bars = [stamp(9, 20, 45), stamp(9, 20, 50), stamp(9, 20, 55), stamp(12, 0), stamp(12, 0, 5)]
+        self.assertEqual(detect_weekend_close_bar_timestamp(bars), stamp(9, 20, 55))
+        self.assertEqual(detect_weekend_reopen_timestamp(bars), stamp(12, 0))
+        # The next inferred close is Friday 21:00 UTC; exit window starts 20:30 UTC.
+        self.assertFalse(in_dynamic_weekly_exit_window(bars, stamp(16, 20, 25)))
+        self.assertTrue(in_dynamic_weekly_exit_window(bars, stamp(16, 20, 30)))
+        self.assertTrue(in_dynamic_weekly_exit_window(bars, stamp(16, 20, 59)))
+        self.assertFalse(in_dynamic_weekly_exit_window(bars, stamp(16, 21, 0)))
+
+    def test_weekend_detector_requires_large_gap(self):
+        import datetime
+
+        def stamp(day, hour, minute=0):
+            return int(datetime.datetime(2026, 1, day, hour, minute, tzinfo=datetime.timezone.utc).timestamp())
+
+        bars = [stamp(9, 20), stamp(9, 20, 5), stamp(9, 20, 10)]
+        self.assertIsNone(detect_weekend_close_bar_timestamp(bars))
+        self.assertIsNone(detect_weekend_reopen_timestamp(bars))
 
     def test_swing_signal_uses_half_leg_stop_and_three_r_target(self):
         high = Swing(index=10, timestamp=100, price=110.0, kind="high", leg_start_price=100.0)
