@@ -97,24 +97,6 @@ class ZigZagPortfolioRunner:
         volume = min(volume, maximum)
         return volume
 
-    def _cancel_pending_side(self, symbol: str, side: str, keep_ticket: int | None = None) -> None:
-        orders = mt5.orders_get(symbol=symbol)
-        if orders is None:
-            log.error("Could not retrieve pending orders for %s; refusing replacement", symbol)
-            return
-        desired = mt5.ORDER_TYPE_BUY_STOP if side == "buy" else mt5.ORDER_TYPE_SELL_STOP
-        for order in orders:
-            if order.magic != settings.MAGIC or order.type != desired or order.ticket == keep_ticket:
-                continue
-            request = {"action": mt5.TRADE_ACTION_REMOVE, "order": order.ticket, "symbol": symbol}
-            if settings.LIVE_TRADING_ENABLED:
-                result = mt5.order_send(request)
-                if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-                    log.error("Pending order cancellation failed for ticket %s", order.ticket)
-                    raise RuntimeError("Pending order cancellation failed; do not replace it.")
-            else:
-                log.info("[DRY RUN] Would cancel pending %s ticket=%s", side, order.ticket)
-
     def _place_signal(self, asset: str, symbol: str, signal, balance: float, reference: float) -> None:
         info = mt5.symbol_info(symbol)
         tick = mt5.symbol_info_tick(symbol)
@@ -163,16 +145,12 @@ class ZigZagPortfolioRunner:
         )
         if not settings.LIVE_TRADING_ENABLED:
             log.info("[DRY RUN] Pending order not sent.")
-            self._cancel_pending_side(symbol, signal.side)
             return
         result = mt5.order_send(request)
         if result is None or result.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
             log.error("Pending order rejected: %s", mt5.last_error() if result is None else result.comment)
             return
-        log.info("Pending order accepted: ticket=%s", result.order)
-        # Keep the existing pending order until the replacement is accepted.
-        # Exclude the newly accepted ticket while removing older same-side orders.
-        self._cancel_pending_side(symbol, signal.side, keep_ticket=int(result.order))
+        log.info("Pending order accepted: ticket=%s; existing pending orders are retained", result.order)
 
     def _process_symbol(self, asset: str, symbol: str, balance: float, reference: float) -> None:
         rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, settings.FETCH_BARS)
@@ -193,26 +171,32 @@ class ZigZagPortfolioRunner:
         )
         if not swings:
             return
-        swing = swings[-1]
-        event_timestamp = int(swing.event_timestamp or swing.timestamp)
-        key = f"{asset}:{swing.kind}"
-        if int(self.state["last_swing"].get(key, 0)) >= event_timestamp:
-            return
-        if asset == "gold" and not in_dynamic_gold_fill_window(
-            times,
-            int(times[-1]),
-            wait_minutes=60,
-            session_end_hour_utc=settings.GOLD_SESSION_END_UTC,
+        # Process every newly observed swing event, not only the newest event.
+        # Each qualifying setup can place its own pending order; buy and sell
+        # orders, including multiple orders on the same side, may coexist.
+        for swing in sorted(
+            swings,
+            key=lambda item: int(item.event_timestamp or item.timestamp),
         ):
-            log.info(
-                "Gold is outside its bar-detected fill window; keeping swing unprocessed "
-                "so it can be evaluated when the window opens."
-            )
-            return
-        signal = signal_from_swing(swing, float(info.point), settings.REWARD_RISK)
-        self._place_signal(asset, symbol, signal, balance, reference)
-        self.state["last_swing"][key] = event_timestamp
-        self._save_state()
+            event_timestamp = int(swing.event_timestamp or swing.timestamp)
+            key = f"{asset}:{swing.kind}"
+            if int(self.state["last_swing"].get(key, 0)) >= event_timestamp:
+                continue
+            if asset == "gold" and not in_dynamic_gold_fill_window(
+                times,
+                int(times[-1]),
+                wait_minutes=60,
+                session_end_hour_utc=settings.GOLD_SESSION_END_UTC,
+            ):
+                log.info(
+                    "Gold is outside its bar-detected fill window; keeping swing unprocessed "
+                    "so it can be evaluated when the window opens."
+                )
+                return
+            signal = signal_from_swing(swing, float(info.point), settings.REWARD_RISK)
+            self._place_signal(asset, symbol, signal, balance, reference)
+            self.state["last_swing"][key] = event_timestamp
+            self._save_state()
 
     def _weekly_exit(self) -> bool:
         # Infer the next close from the most recent weekend-sized gap in MT5 bars.
