@@ -97,6 +97,41 @@ class ZigZagPortfolioRunner:
         volume = min(volume, maximum)
         return volume
 
+    def _pending_orders_for_side(self, symbol: str, side: str):
+        """Return this strategy's pending orders for one side; never inspect open positions."""
+        orders = mt5.orders_get(symbol=symbol)
+        if orders is None:
+            log.error("Could not inspect pending orders for %s: %s", symbol, mt5.last_error())
+            return None
+        pending_type = mt5.ORDER_TYPE_BUY_STOP if side == "buy" else mt5.ORDER_TYPE_SELL_STOP
+        return [
+            order for order in orders
+            if order.magic == settings.MAGIC and order.type == pending_type
+        ]
+
+    def _replace_pending_side_after_acceptance(self, symbol: str, side: str, new_ticket: int) -> None:
+        """After a replacement is accepted, remove older pending orders on that side only."""
+        orders = self._pending_orders_for_side(symbol, side)
+        if orders is None:
+            return
+        for order in orders:
+            if int(order.ticket) == int(new_ticket):
+                continue
+            result = mt5.order_send({
+                "action": mt5.TRADE_ACTION_REMOVE,
+                "order": order.ticket,
+                "symbol": symbol,
+                "magic": settings.MAGIC,
+                "comment": "Replace same-side ZigZag pending order",
+            })
+            if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+                log.error(
+                    "Could not remove superseded %s pending order %s: %s",
+                    side, order.ticket, mt5.last_error() if result is None else result.comment,
+                )
+            else:
+                log.info("Removed superseded %s pending order ticket=%s", side, order.ticket)
+
     def _place_signal(self, asset: str, symbol: str, signal, balance: float, reference: float) -> None:
         info = mt5.symbol_info(symbol)
         tick = mt5.symbol_info_tick(symbol)
@@ -119,6 +154,34 @@ class ZigZagPortfolioRunner:
             log.warning("Volume is below broker minimum or risk calculation failed; skipping %s", symbol)
             return
         order_type = mt5.ORDER_TYPE_BUY_STOP if signal.side == "buy" else mt5.ORDER_TYPE_SELL_STOP
+
+        # Keep at most one strategy-owned pending order per symbol and side.
+        # A new BUY replaces an existing BUY only at a lower entry; a new SELL
+        # replaces an existing SELL only at a higher entry. The opposite side
+        # and all open positions are left untouched.
+        existing = self._pending_orders_for_side(symbol, signal.side)
+        if existing is None:
+            return
+        if existing:
+            best_existing_entry = (
+                min(float(order.price_open) for order in existing)
+                if signal.side == "buy"
+                else max(float(order.price_open) for order in existing)
+            )
+            improves_entry = (
+                entry < best_existing_entry
+                if signal.side == "buy"
+                else entry > best_existing_entry
+            )
+            if not improves_entry:
+                log.info(
+                    "Keeping existing %s pending order(s) for %s: new entry %.*f "
+                    "does not improve existing entry %.*f",
+                    signal.side, symbol, info.digits, entry,
+                    info.digits, best_existing_entry,
+                )
+                return
+
         request = {
             "action": mt5.TRADE_ACTION_PENDING,
             "symbol": symbol,
@@ -150,7 +213,11 @@ class ZigZagPortfolioRunner:
         if result is None or result.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
             log.error("Pending order rejected: %s", mt5.last_error() if result is None else result.comment)
             return
-        log.info("Pending order accepted: ticket=%s; existing pending orders are retained", result.order)
+        log.info("Pending %s accepted: ticket=%s", signal.side, result.order)
+        if result.order:
+            self._replace_pending_side_after_acceptance(symbol, signal.side, int(result.order))
+        else:
+            log.error("Accepted pending order returned no ticket; old %s orders were retained", signal.side)
 
     def _process_symbol(self, asset: str, symbol: str, balance: float, reference: float) -> None:
         rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, settings.FETCH_BARS)
