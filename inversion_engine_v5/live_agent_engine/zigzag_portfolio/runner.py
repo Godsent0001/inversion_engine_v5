@@ -155,14 +155,34 @@ class ZigZagPortfolioRunner:
             return
         order_type = mt5.ORDER_TYPE_BUY_STOP if signal.side == "buy" else mt5.ORDER_TYPE_SELL_STOP
 
-        # Every new qualifying swing signal supersedes the existing pending
-        # order on that same side, regardless of whether its entry is higher
-        # or lower. The opposite-side pending order and all open positions
-        # must remain untouched. The old same-side order is removed only
-        # after MT5 accepts the replacement below.
+        # Pending orders are managed independently by side. Enforce the
+        # strategy's price-improvement rule before submitting a replacement:
+        # BUY STOP: only a lower entry may replace the existing BUY STOP.
+        # SELL STOP: only a higher entry may replace the existing SELL STOP.
+        # The opposite side and all open positions remain untouched.
         existing = self._pending_orders_for_side(symbol, signal.side)
         if existing is None:
             return
+        if existing:
+            existing_prices = [float(order.price_open) for order in existing]
+            if signal.side == "buy":
+                best_existing = min(existing_prices)
+                if entry >= best_existing:
+                    log.info(
+                        "Skipping gold/oil BUY STOP at %.*f: it is not lower than "
+                        "the existing same-side pending entry %.*f for %s",
+                        info.digits, entry, info.digits, best_existing, symbol,
+                    )
+                    return
+            else:
+                best_existing = max(existing_prices)
+                if entry <= best_existing:
+                    log.info(
+                        "Skipping %s SELL STOP at %.*f: it is not higher than "
+                        "the existing same-side pending entry %.*f",
+                        asset, info.digits, entry, info.digits, best_existing,
+                    )
+                    return
 
         request = {
             "action": mt5.TRADE_ACTION_PENDING,
@@ -234,12 +254,18 @@ class ZigZagPortfolioRunner:
             ):
                 latest_by_kind[kind] = swing
 
-        # BUY and SELL sides remain independent. At most the newest unseen
-        # event for each side is evaluated per poll; older backlog events are
-        # deliberately skipped because a newer event supersedes them.
+        # Only an event detected on the latest completed M5 candle is a
+        # fresh signal. The detector also returns old events from the fetched
+        # history; submitting those after a restart can create wildly stale
+        # entries. Missed historical events are intentionally not replayed.
+        latest_closed_bar_time = int(times[-1])
+        fresh_events = [
+            swing for swing in latest_by_kind.values()
+            if int(swing.event_timestamp or swing.timestamp) == latest_closed_bar_time
+        ]
         last_swing = self.state.setdefault("last_swing", {})
         for swing in sorted(
-            latest_by_kind.values(),
+            fresh_events,
             key=lambda item: int(item.event_timestamp or item.timestamp),
         ):
             event_timestamp = int(swing.event_timestamp or swing.timestamp)
