@@ -238,6 +238,12 @@ class ZigZagPortfolioRunner:
                     signal.side, attempt, max_attempts, result.order,
                 )
                 new_ticket = int(result.order or 0)
+                if new_ticket:
+                    # Persist the broker ticket so a restart can distinguish a
+                    # manually cancelled order from an order that actually filled.
+                    # Older state files may not have this field; those are handled
+                    # conservatively by checking current positions and entry validity.
+                    self._shadow_for(asset)[signal.side]["order_ticket"] = new_ticket
                 for old_order in old_orders:
                     if new_ticket and int(old_order.ticket) == new_ticket:
                         continue
@@ -401,16 +407,68 @@ class ZigZagPortfolioRunner:
             if not order or order.get("consumed"):
                 continue
 
-            # Reconcile an order submitted before a restart. If MT5 no longer
-            # has it, don't recreate it: it may have filled or been cancelled.
+            # Reconcile persisted submissions against MT5. A missing pending order
+            # may have been manually cancelled, so do not permanently consume the
+            # setup just because it is absent from orders_get(). Use its saved ticket
+            # to detect a completed fill; otherwise re-arm it, subject to current
+            # position, session, risk, and entry-price checks below.
             if order.get("submitted"):
                 broker_orders = self._pending_orders_for_side(symbol, side)
                 if broker_orders is None:
                     continue
-                if not broker_orders:
+                if broker_orders:
+                    continue
+
+                order_ticket = int(order.get("order_ticket") or 0)
+                if order_ticket:
+                    try:
+                        history_orders = mt5.history_orders_get(ticket=order_ticket)
+                    except (AttributeError, TypeError):
+                        history_orders = None
+                    if history_orders and any(
+                        int(getattr(history_order, "ticket", 0)) == order_ticket
+                        and getattr(history_order, "state", None) == mt5.ORDER_STATE_FILLED
+                        for history_order in history_orders
+                    ):
+                        order["consumed"] = True
+                        changed = True
+                        log.info(
+                            "%s %s setup ticket=%s was filled; not re-arming it.",
+                            asset, side, order_ticket,
+                        )
+                        continue
+
+                positions = mt5.positions_get(symbol=symbol)
+                if positions is None:
+                    log.error("Could not inspect open positions for %s; not re-arming %s.", symbol, side)
+                    continue
+                position_type = mt5.POSITION_TYPE_BUY if side == "buy" else mt5.POSITION_TYPE_SELL
+                same_side_positions = [
+                    position for position in positions
+                    if position.magic == settings.MAGIC and position.type == position_type
+                ]
+                if same_side_positions:
                     order["consumed"] = True
                     changed = True
-                continue
+                    log.info(
+                        "%s %s setup has an existing strategy position; not re-arming.",
+                        asset, side,
+                    )
+                    continue
+
+                order["submitted"] = False
+                order.pop("order_ticket", None)
+                # The setup is being reconciled now. Do not replay historical bars
+                # from before this restart/cancellation; _place_signal() still checks
+                # the live tick and refuses an already-crossed pending entry.
+                if closed:
+                    order["last_checked_timestamp"] = int(closed[-1]["time"])
+                changed = True
+                log.warning(
+                    "%s %s pending order is missing from MT5; re-arming saved setup "
+                    "if its entry is still valid.",
+                    asset, side,
+                )
 
             entry = float(order["entry"])
             created = int(order["swing_timestamp"])
