@@ -68,7 +68,7 @@ class StrategyTests(unittest.TestCase):
 
     def test_detector_is_repeatable_and_preserves_event_timing(self):
         highs = [10, 11, 12, 11, 10, 9, 10, 11, 13, 12, 10, 8, 9, 11, 12, 10, 8, 7, 9, 12, 13, 11, 9, 8, 10, 12, 11, 9, 7, 8]
-        lows = [value - 2 for value in highs]
+        lows = [8, 9, 10, 9, 8, 7, 8, 9, 11, 10, 8, 6, 7, 9, 10, 8, 6, 5, 7, 10, 11, 9, 7, 6, 8, 10, 9, 7, 5, 6]
         times = list(range(1000, 1000 + len(highs)))
         kwargs = dict(depth=5, deviation_points=3, point=0.001, backstep=2)
         first = detect_confirmed_swings(highs, lows, times, **kwargs)
