@@ -62,12 +62,14 @@ def detect_confirmed_swings(
     deviation_points: float = 3.0,
     point: float = 0.001,
     backstep: int = 2,
+    repainting: bool = False,
 ) -> list[Swing]:
-    """Port of portfolio.py's zigzag_events, preserving event and pivot data.
+    """Port portfolio.py's ZigZag state machine.
 
-    Each event is emitted when the reference state machine can establish the
-    completed swing. The older flip bar is retained for diagnostics only; the
-    live runner must never place an order retroactively on that earlier bar.
+    With repainting=False, events match the reference's backstep-confirmed
+    events. With repainting=True, the state machine reacts to the current
+    opposite-leg candidate as soon as that bar closes, which is the mode the
+    live runner uses. The live mode never schedules an order on a past bar.
     """
     if not (len(highs) == len(lows) == len(times)):
         raise ValueError("highs, lows and times must have equal lengths.")
@@ -114,7 +116,7 @@ def detect_confirmed_swings(
                         high_map[current - back] = 0.0
         high_map[current] = value if high_values[current] == value else 0.0
 
-        pivot_marker = current - backstep
+        pivot_marker = current if repainting else current - backstep
         if pivot_marker < depth:
             continue
 
