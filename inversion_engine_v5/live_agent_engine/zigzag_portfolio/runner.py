@@ -413,8 +413,27 @@ class ZigZagPortfolioRunner:
         changed = False
         for side in ("buy", "sell"):
             order = book.get(side)
-            if not order or order.get("consumed"):
+            if not order:
+                log.info("%s %s shadow diagnostic: no saved setup.", asset, side)
                 continue
+            if order.get("consumed"):
+                log.warning(
+                    "%s %s shadow diagnostic: SKIPPED because consumed=True; "
+                    "entry=%s submitted=%s ticket=%s swing_timestamp=%s "
+                    "last_checked_timestamp=%s consumed_reason=%s state_fields=%s",
+                    asset, side, order.get("entry"), order.get("submitted", False),
+                    order.get("order_ticket"), order.get("swing_timestamp"),
+                    order.get("last_checked_timestamp"), order.get("consumed_reason"),
+                    sorted(order.keys()),
+                )
+                continue
+            log.info(
+                "%s %s shadow diagnostic: eligible for processing; entry=%s "
+                "submitted=%s ticket=%s swing_timestamp=%s last_checked_timestamp=%s",
+                asset, side, order.get("entry"), order.get("submitted", False),
+                order.get("order_ticket"), order.get("swing_timestamp"),
+                order.get("last_checked_timestamp"),
+            )
 
             # Reconcile persisted submissions against MT5. A missing pending order
             # may have been manually cancelled, so do not permanently consume the
@@ -445,10 +464,14 @@ class ZigZagPortfolioRunner:
                         for history_order in history_orders
                     ):
                         order["consumed"] = True
+                        order["consumed_reason"] = "broker_history_confirms_filled"
                         changed = True
-                        log.info(
-                            "%s %s setup ticket=%s was filled; not re-arming it.",
-                            asset, side, order_ticket,
+                        log.warning(
+                            "%s %s CONSUMING shadow: broker history confirms ticket=%s filled; "
+                            "entry=%.8f history_state=%s",
+                            asset, side, order_ticket, float(order["entry"]),
+                            [getattr(history_order, "state", None) for history_order in history_orders
+                             if int(getattr(history_order, "ticket", 0)) == order_ticket],
                         )
                         continue
 
@@ -463,10 +486,14 @@ class ZigZagPortfolioRunner:
                 ]
                 if same_side_positions:
                     order["consumed"] = True
+                    order["consumed_reason"] = "same_side_strategy_position_exists"
                     changed = True
-                    log.info(
-                        "%s %s setup has an existing strategy position; not re-arming.",
-                        asset, side,
+                    log.warning(
+                        "%s %s CONSUMING shadow: same-side strategy position exists; "
+                        "entry=%.8f positions=%s",
+                        asset, side, float(order["entry"]),
+                        [(int(p.ticket), int(p.type), float(p.volume), float(p.price_open))
+                         for p in same_side_positions],
                     )
                     continue
 
@@ -499,9 +526,22 @@ class ZigZagPortfolioRunner:
                 checked = bar_time
 
             if touched_at is not None:
+                touched_row = next((row for row in closed if int(row["time"]) == touched_at), None)
                 order["last_checked_timestamp"] = touched_at
                 order["consumed"] = True
+                order["consumed_reason"] = "historical_bar_touched_entry_before_submission"
                 changed = True
+                log.warning(
+                    "%s %s CONSUMING shadow: entry=%.8f created=%s checked_from=%s "
+                    "touch_bar=%s bar_high=%s bar_low=%s submitted=%s ticket=%s",
+                    asset, side, entry,
+                    datetime.fromtimestamp(created, timezone.utc).isoformat(),
+                    datetime.fromtimestamp(checked, timezone.utc).isoformat(),
+                    datetime.fromtimestamp(touched_at, timezone.utc).isoformat(),
+                    None if touched_row is None else float(touched_row["high"]),
+                    None if touched_row is None else float(touched_row["low"]),
+                    order.get("submitted", False), order.get("order_ticket"),
+                )
                 # This signal superseded any older same-side order. If the new
                 # shadow signal was touched before submission, do not leave the
                 # old broker order active as an accidental substitute.
@@ -546,7 +586,14 @@ class ZigZagPortfolioRunner:
                 changed = True
             elif placement_status in ("superseded", "stale"):
                 order["consumed"] = True
+                order["consumed_reason"] = f"placement_status_{placement_status}"
                 changed = True
+                log.warning(
+                    "%s %s CONSUMING shadow after placement result=%s; entry=%.8f "
+                    "submitted=%s ticket=%s",
+                    asset, side, placement_status, entry,
+                    order.get("submitted", False), order.get("order_ticket"),
+                )
             # In dry-run mode, retain the shadow order for inspection and replay.
         if changed:
             self._save_state()
@@ -609,6 +656,11 @@ class ZigZagPortfolioRunner:
             event_timestamp = int(swing.event_timestamp or swing.timestamp)
             key = f"{asset}:{swing.kind}"
             if int(last_swing.get(key, 0)) >= event_timestamp:
+                log.debug(
+                    "%s swing ignored as already recorded: kind=%s event_timestamp=%s "
+                    "saved_watermark=%s",
+                    asset, swing.kind, event_timestamp, int(last_swing.get(key, 0)),
+                )
                 continue
             signal = signal_from_swing(swing, float(info.point), settings.REWARD_RISK)
             log.info(
