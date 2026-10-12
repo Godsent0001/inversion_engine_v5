@@ -18,7 +18,7 @@ import MetaTrader5 as mt5
 from execution.mt5_connector import MT5Connector
 from zigzag_portfolio import settings
 from zigzag_portfolio.risk_state import PersistentRiskReference
-from zigzag_portfolio.strategy import detect_confirmed_swings, in_gold_session, signal_from_swing
+from zigzag_portfolio.strategy import detect_confirmed_swings, in_dynamic_gold_fill_window, signal_from_swing
 
 log = logging.getLogger("zigzag_portfolio")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -193,12 +193,16 @@ class ZigZagPortfolioRunner:
         key = f"{asset}:{swing.kind}"
         if int(self.state["last_swing"].get(key, 0)) >= event_timestamp:
             return
-        if asset == "gold" and not in_gold_session(
-            int(times[-1]), settings.GOLD_SESSION_START_UTC, settings.GOLD_SESSION_END_UTC
+        if asset == "gold" and not in_dynamic_gold_fill_window(
+            times,
+            int(times[-1]),
+            wait_minutes=60,
+            session_end_hour_utc=settings.GOLD_SESSION_END_UTC,
         ):
-            log.info("Gold fill session closed; not submitting a new gold order now.")
-            self.state["last_swing"][key] = event_timestamp
-            self._save_state()
+            log.info(
+                "Gold is outside its bar-detected fill window; keeping swing unprocessed "
+                "so it can be evaluated when the window opens."
+            )
             return
         signal = signal_from_swing(swing, float(info.point), settings.REWARD_RISK)
         self._place_signal(asset, symbol, signal, balance, reference)
