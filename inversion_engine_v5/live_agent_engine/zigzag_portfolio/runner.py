@@ -189,19 +189,20 @@ class ZigZagPortfolioRunner:
         if not swings:
             return
         swing = swings[-1]
+        event_timestamp = int(swing.event_timestamp or swing.timestamp)
         key = f"{asset}:{swing.kind}"
-        if int(self.state["last_swing"].get(key, 0)) >= swing.timestamp:
+        if int(self.state["last_swing"].get(key, 0)) >= event_timestamp:
             return
         if asset == "gold" and not in_gold_session(
             int(times[-1]), settings.GOLD_SESSION_START_UTC, settings.GOLD_SESSION_END_UTC
         ):
-            log.info("Gold session closed; ignoring newly observed swing.")
-            self.state["last_swing"][key] = swing.timestamp
+            log.info("Gold fill session closed; not submitting a new gold order now.")
+            self.state["last_swing"][key] = event_timestamp
             self._save_state()
             return
         signal = signal_from_swing(swing, float(info.point), settings.REWARD_RISK)
         self._place_signal(asset, symbol, signal, balance, reference)
-        self.state["last_swing"][key] = swing.timestamp
+        self.state["last_swing"][key] = event_timestamp
         self._save_state()
 
     def _weekly_exit(self) -> bool:
