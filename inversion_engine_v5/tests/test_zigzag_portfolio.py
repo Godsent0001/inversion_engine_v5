@@ -12,6 +12,8 @@ from zigzag_portfolio.strategy import (
     detect_gold_reopen_timestamp,
     detect_weekend_close_bar_timestamp,
     detect_weekend_reopen_timestamp,
+    detect_daily_close_bar_timestamp,
+    in_dynamic_daily_exit_window,
     in_dynamic_gold_fill_window,
     gold_fill_window_timestamps,
     in_dynamic_weekly_exit_window,
@@ -177,6 +179,30 @@ class StrategyTests(unittest.TestCase):
         for swing in live:
             self.assertEqual(swing.event_index, swing.flip_index)
             self.assertEqual(swing.event_timestamp, swing.flip_timestamp)
+
+
+    def test_daily_oil_exit_window_is_inferred_from_daily_gap(self):
+        import datetime
+
+        def stamp(day, hour, minute=0):
+            return int(datetime.datetime(2026, 1, day, hour, minute, tzinfo=datetime.timezone.utc).timestamp())
+
+        bars = [stamp(5, 20, 40), stamp(5, 20, 45), stamp(5, 20, 50), stamp(6, 0), stamp(6, 0, 5)]
+        self.assertEqual(detect_daily_close_bar_timestamp(bars), stamp(5, 20, 50))
+        self.assertTrue(in_dynamic_daily_exit_window(bars, stamp(6, 20, 25)))
+        self.assertTrue(in_dynamic_daily_exit_window(bars, stamp(6, 20, 54)))
+        self.assertFalse(in_dynamic_daily_exit_window(bars, stamp(6, 20, 55)))
+
+    def test_daily_exit_detector_ignores_weekend_sized_gaps(self):
+        import datetime
+
+        def stamp(day, hour, minute=0):
+            return int(datetime.datetime(2026, 1, day, hour, minute, tzinfo=datetime.timezone.utc).timestamp())
+
+        bars = [stamp(9, 20, 45), stamp(9, 20, 50), stamp(12, 0), stamp(12, 0, 5)]
+        self.assertIsNone(detect_daily_close_bar_timestamp(bars))
+        self.assertFalse(in_dynamic_daily_exit_window(bars, stamp(12, 20, 30)))
+
 
 
 class RunnerReconciliationTests(unittest.TestCase):
