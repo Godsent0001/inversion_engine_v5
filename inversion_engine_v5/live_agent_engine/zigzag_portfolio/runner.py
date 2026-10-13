@@ -22,6 +22,7 @@ from zigzag_portfolio.strategy import (
     detect_confirmed_swings,
     detect_gold_reopen_timestamp,
     in_dynamic_gold_fill_window,
+    in_dynamic_daily_exit_window,
     in_dynamic_weekly_exit_window,
     signal_from_swing,
 )
@@ -676,6 +677,63 @@ class ZigZagPortfolioRunner:
             asset, symbol, closed, times, gold_fill_allowed, balance, reference
         )
 
+    def _daily_oil_exit(self) -> bool:
+        """Close this strategy's UK Oil positions 30 minutes before its inferred daily close."""
+        symbol = self.symbols.get("oil")
+        if not symbol:
+            return False
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, settings.FETCH_BARS)
+        if rates is None or len(rates) < 2:
+            log.error("Cannot infer daily UK Oil close: no usable M5 history for %s.", symbol)
+            return False
+        times = [int(row["time"]) for row in rates[:-1]]
+        now_timestamp = int(datetime.now(timezone.utc).timestamp())
+        if not in_dynamic_daily_exit_window(
+            times, now_timestamp,
+            exit_minutes_before_close=settings.EXIT_MINUTES_BEFORE_WEEKLY_CLOSE,
+            timeframe_minutes=5,
+            min_gap_minutes=45,
+            max_gap_hours=settings.WEEKEND_GAP_HOURS,
+        ):
+            return False
+
+        log.warning("UK Oil daily exit window detected for %s; closing strategy positions.", symbol)
+        positions = mt5.positions_get(symbol=symbol)
+        if positions is None:
+            log.error("Could not inspect UK Oil positions during daily exit window.")
+            return True
+        for position in positions:
+            if position.magic != settings.MAGIC:
+                continue
+            tick = mt5.symbol_info_tick(symbol)
+            if tick is None:
+                log.error("Cannot close UK Oil position %s: missing tick.", position.ticket)
+                continue
+            is_buy = position.type == mt5.POSITION_TYPE_BUY
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "position": position.ticket,
+                "volume": position.volume,
+                "type": mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY,
+                "price": tick.bid if is_buy else tick.ask,
+                "deviation": 20,
+                "magic": settings.MAGIC,
+                "comment": "ZZ UK Oil daily exit",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            if not settings.LIVE_TRADING_ENABLED:
+                log.info("[DRY RUN] Would close UK Oil position ticket=%s for daily close.", position.ticket)
+                continue
+            result = mt5.order_send(request)
+            if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+                log.error("UK Oil daily close failed for ticket %s: %s",
+                          position.ticket, mt5.last_error() if result is None else result.comment)
+            else:
+                log.warning("Closed UK Oil position ticket=%s before daily market close.", position.ticket)
+        return True
+
     def _weekly_exit(self) -> bool:
         """Close strategy positions in each symbol's own observed weekly-close window.
 
@@ -759,7 +817,11 @@ class ZigZagPortfolioRunner:
             return
         if self._weekly_exit():
             return
+        oil_daily_exit_window = self._daily_oil_exit()
         for asset, symbol in self.symbols.items():
+            if asset == "oil" and oil_daily_exit_window:
+                log.info("Skipping new UK Oil entries during the daily exit window.")
+                continue
             try:
                 self._process_symbol(asset, symbol, balance, risk_state.active_reference)
             except Exception:
