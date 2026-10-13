@@ -168,6 +168,49 @@ def in_dynamic_weekly_exit_window(
         exit_start += week_seconds
     return exit_start <= now < expected_close
 
+
+def detect_daily_close_bar_timestamp(
+    times: Sequence[int],
+    min_gap_minutes: int = 45,
+    max_gap_hours: int = 40,
+) -> int | None:
+    """Find the latest observed daily-session close bar, excluding weekend gaps."""
+    if min_gap_minutes <= 0 or max_gap_hours <= 0:
+        raise ValueError("Gap thresholds must be positive.")
+    minimum = min_gap_minutes * 60
+    maximum = max_gap_hours * 3600
+    close_bar: int | None = None
+    for previous, current in zip(times, times[1:]):
+        gap = int(current) - int(previous)
+        if minimum <= gap < maximum:
+            close_bar = int(previous)
+    return close_bar
+
+
+def in_dynamic_daily_exit_window(
+    times: Sequence[int],
+    current_timestamp: int,
+    exit_minutes_before_close: int = 30,
+    timeframe_minutes: int = 5,
+    min_gap_minutes: int = 45,
+    max_gap_hours: int = 40,
+) -> bool:
+    """Infer the next daily close from M5 session gaps; exclude weekly-sized gaps."""
+    if not times or exit_minutes_before_close <= 0 or timeframe_minutes <= 0:
+        return False
+    close_bar = detect_daily_close_bar_timestamp(
+        times, min_gap_minutes=min_gap_minutes, max_gap_hours=max_gap_hours
+    )
+    if close_bar is None:
+        return False
+    expected_close = close_bar + timeframe_minutes * 60
+    exit_start = expected_close - exit_minutes_before_close * 60
+    now = int(current_timestamp)
+    while expected_close <= now:
+        expected_close += 24 * 3600
+        exit_start += 24 * 3600
+    return exit_start <= now < expected_close
+
 def _lowest_idx(values: Sequence[float], depth: int, start: int) -> int:
     minimum, index = values[start], start
     for i in range(start - 1, max(start - depth, -1), -1):
