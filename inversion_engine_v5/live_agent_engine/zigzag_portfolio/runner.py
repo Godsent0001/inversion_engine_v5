@@ -36,7 +36,10 @@ class ZigZagPortfolioRunner:
         self.connector = ZigZagMT5Connection()
         self.state_path = Path(__file__).resolve().parents[1] / settings.STATE_FILE
         self.risk_path = Path(__file__).resolve().parents[1] / settings.RISK_STATE_FILE
-        self.risk_reference = PersistentRiskReference(self.risk_path)
+        self.risk_reference = PersistentRiskReference(
+            self.risk_path,
+            drawdown_reset_percent=settings.HWM_RESET_DRAWDOWN_PERCENT,
+        )
         self.state = self._load_state()
         self.state.setdefault("shadow_book", {})
         self.symbols: dict[str, str] = {}
@@ -168,7 +171,7 @@ class ZigZagPortfolioRunner:
         if signal.side == "sell" and entry >= tick.bid:
             log.info("Sell-stop level is not below current bid for %s; skipping stale swing", symbol)
             return "stale"
-        risk_pct = settings.GOLD_RISK_PERCENT if asset == "gold" else settings.OIL_RISK_PERCENT
+        risk_pct = settings.RISK_PERCENT_BY_ASSET[asset]
         risk_cash = reference * risk_pct
         volume = self._volume_for_risk(symbol, signal.side, entry, stop, risk_cash)
         if volume <= 0:
@@ -734,7 +737,7 @@ class ZigZagPortfolioRunner:
                 log.warning("Closed UK Oil position ticket=%s before daily market close.", position.ticket)
         return True
 
-    def _weekly_exit(self) -> bool:
+    def _weekly_exit(self) -> set[str]:
         """Close strategy positions in each symbol's own observed weekly-close window.
 
         The Python MT5 API does not expose broker session calendars, so each
@@ -744,7 +747,11 @@ class ZigZagPortfolioRunner:
         """
         now_timestamp = int(datetime.now(timezone.utc).timestamp())
         exiting_symbols: set[str] = set()
-        for symbol in set(self.symbols.values()):
+        for asset, symbol in self.symbols.items():
+            # Step Index is intended to run continuously, including weekends.
+            # Do not apply FX/commodity weekly-close cleanup to this synthetic index.
+            if asset == "step_index":
+                continue
             rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, settings.FETCH_BARS)
             if rates is None or len(rates) < 2:
                 log.error("Cannot infer weekly close for %s: no usable M5 history.", symbol)
@@ -757,13 +764,13 @@ class ZigZagPortfolioRunner:
             ):
                 exiting_symbols.add(symbol)
         if not exiting_symbols:
-            return False
+            return set()
 
         log.warning("Weekly exit window detected for symbols: %s", ", ".join(sorted(exiting_symbols)))
         positions = mt5.positions_get()
         if positions is None:
             log.error("Could not inspect positions during weekly exit window.")
-            return True
+            return exiting_symbols
         for position in positions:
             if position.magic != settings.MAGIC or position.symbol not in exiting_symbols:
                 continue
@@ -791,7 +798,7 @@ class ZigZagPortfolioRunner:
                     log.error("Weekly close failed for ticket %s", position.ticket)
             else:
                 log.info("[DRY RUN] Would close position ticket=%s", position.ticket)
-        return True
+        return exiting_symbols
 
     def run_once(self) -> None:
         log.info("DEBUG cycle: polling MT5 for new ZigZag setups.")
@@ -815,10 +822,12 @@ class ZigZagPortfolioRunner:
         except Exception:
             log.exception("Risk reference state failed; refusing new entries.")
             return
-        if self._weekly_exit():
-            return
+        weekly_exit_symbols = self._weekly_exit()
         oil_daily_exit_window = self._daily_oil_exit()
         for asset, symbol in self.symbols.items():
+            if symbol in weekly_exit_symbols:
+                log.info("Skipping new %s entries during its weekly exit window.", asset)
+                continue
             if asset == "oil" and oil_daily_exit_window:
                 log.info("Skipping new UK Oil entries during the daily exit window.")
                 continue
