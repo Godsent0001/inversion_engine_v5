@@ -1,4 +1,4 @@
-"""Persistent high-water risk reference with recursive 50% drawdown resets."""
+"""Persistent high-water risk reference with configurable drawdown resets."""
 from __future__ import annotations
 import json
 import os
@@ -16,8 +16,15 @@ class RiskState:
     last_reset_utc: str | None = None
 
 class PersistentRiskReference:
-    def __init__(self, state_path: str | os.PathLike[str]):
+    def __init__(
+        self,
+        state_path: str | os.PathLike[str],
+        drawdown_reset_percent: float = 0.25,
+    ):
+        if not 0 < drawdown_reset_percent < 1:
+            raise ValueError("drawdown_reset_percent must be between 0 and 1.")
         self.path = Path(state_path)
+        self.drawdown_reset_percent = float(drawdown_reset_percent)
 
     def _save(self, state: RiskState) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,14 +60,14 @@ class PersistentRiskReference:
         return state
 
     def update(self, live_balance: float) -> RiskState:
-        """Update HWM; recursively reset the active reference at a 50% decline."""
+        """Update HWM; reset the active reference after the configured drawdown."""
         if live_balance <= 0:
             raise ValueError("Live MT5 balance must be positive.")
         state = self.load_or_initialize(live_balance)
         if live_balance >= state.active_reference:
             state.active_reference = live_balance
             state.stage_peak_balance = live_balance
-        elif live_balance <= state.active_reference * 0.5:
+        elif live_balance <= state.active_reference * (1.0 - self.drawdown_reset_percent):
             state.active_reference = live_balance
             state.stage_peak_balance = live_balance
             state.reset_count += 1
