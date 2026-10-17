@@ -31,19 +31,19 @@ class RiskReferenceTests(unittest.TestCase):
             self.assertEqual(manager.update(999).active_reference, 1000)
             self.assertEqual(manager.update(1200).active_reference, 1200)
 
-    def test_recursive_50_percent_resets_persist(self):
+    def test_recursive_25_percent_drawdown_resets_persist(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "risk.json"
             manager = PersistentRiskReference(path)
             manager.update(1000)
-            state = manager.update(500)
-            self.assertEqual(state.active_reference, 500)
+            state = manager.update(750)
+            self.assertEqual(state.active_reference, 750)
             self.assertEqual(state.reset_count, 1)
-            state = manager.update(250)
-            self.assertEqual(state.active_reference, 250)
+            state = manager.update(562.5)
+            self.assertEqual(state.active_reference, 562.5)
             self.assertEqual(state.reset_count, 2)
             raw = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(raw["active_reference"], 250)
+            self.assertEqual(raw["active_reference"], 562.5)
             self.assertEqual(raw["reset_count"], 2)
 
     def test_invalid_balance_rejected(self):
@@ -54,9 +54,14 @@ class RiskReferenceTests(unittest.TestCase):
 
 
 class StrategyTests(unittest.TestCase):
-    def test_gold_risk_is_exactly_twice_oil_risk(self):
+    def test_every_asset_uses_one_percent_risk(self):
         from zigzag_portfolio import settings
-        self.assertAlmostEqual(settings.GOLD_RISK_PERCENT, 2 * settings.OIL_RISK_PERCENT)
+        self.assertEqual(
+            settings.RISK_PERCENT_BY_ASSET,
+            {"gold": 0.01, "oil": 0.01, "step_index": 0.01},
+        )
+        self.assertEqual(settings.HWM_RESET_DRAWDOWN_PERCENT, 0.25)
+        self.assertIn("step_index", settings.SYMBOL_CANDIDATES)
 
 
     def test_gold_session_crosses_midnight_utc(self):
